@@ -7,13 +7,25 @@ from binaryninja import (
 )
 
 from .common import TAG_KEYWORD, TypeTree, lookup_named_type_definition, window2
+from .config import DEFAULT_FILTERS, SymbolFilters, SimpleFilters
+
+# ==============================================================================
 
 def create_types_file_json(
         bv: BinaryView,
         types_to_export: tp.Mapping[QualifiedName, Type],
         common_types: tp.Dict[str, TypeTree] = {},
+        filters: SymbolFilters = DEFAULT_FILTERS,
 ):
     """ Write a single file like ``types-own.json`` for the given types. """
+    return _create_types_file_json(bv, types_to_export, common_types, filters)
+
+def _create_types_file_json(
+        bv: BinaryView,
+        types_to_export: tp.Mapping[QualifiedName, Type],
+        common_types: tp.Dict[str, TypeTree],
+        filters: SymbolFilters,
+):
     ttree_converter = TypeToTTreeConverter(bv)
 
     types = {}
@@ -25,7 +37,7 @@ def create_types_file_json(
             'align': ty.alignment,
         }
         if classification == 'struct' or classification == 'union':
-            cereal.update(structure_to_cereal(ty.structure, ttree_converter, _name_for_debug=type_name))
+            cereal.update(structure_to_cereal(ty.structure, ttree_converter, _name_for_debug=type_name, filters=filters))
         elif classification == 'enum':
             cereal.update(enum_to_cereal(ty))
         elif classification == 'typedef':
@@ -46,28 +58,24 @@ def enum_to_cereal(enumeration_ty):
         'values': [{'name': m.name, 'value': m.value} for m in enumeration_ty.enumeration.members],
     }
 
-def structure_to_cereal(structure, ttree_converter, _name_for_debug=None):
-    ignore = lambda name, ty: name and ty and ty.element_type and name.startswith('_') and ty.element_type.width == 1 and ty.width > 64
+def structure_to_cereal(structure, ttree_converter: 'TypeToTTreeConverter', filters: SymbolFilters, _name_for_debug=None):
+    keep = lambda name, ty: structure.union or filters.is_useful_struct_member(name, ty)
+    ignore = lambda name, ty: not keep(name, ty)
 
     fields_iter = _structure_fields(structure, ignore=ignore, _name_for_debug=_name_for_debug)
     output_members = []
     for d in fields_iter:
         ty_json = None if d['type'] is None else ttree_converter.to_ttree(d['type'])
 
-        out_row = {} if structure.union else {'offset': hex(d['offset'])}
+        out_row: tp.Dict[str, tp.Any] = {} if structure.union else {'offset': hex(d['offset'])}
         out_row.update({'name': d['name'], 'type': ty_json})
         output_members.append(out_row)
 
-    out = {}
-    if structure.packed:
-        out['packed'] = True
+    out = {'packed': structure.packed, 'members': output_members}
+    if not out['packed']:
+        del out['packed']
     out['members'] = output_members
     return out
-
-# I use a plugin to fill extremely large gaps with char arrays to make the UI navigable.
-# These should be counted as gaps.
-def member_is_auto_inserted_filler(name, ty):
-    return name and ty and ty.element_type and name.startswith('_') and ty.element_type.width == 1 and ty.width > 64
 
 GAP_MEMBER_NAME = '__unknown'
 PADDING_MEMBER_NAME = '__padding'
@@ -75,9 +83,12 @@ END_MEMBER_NAME = '__end'
 
 def _structure_fields(
         structure,
-        ignore=lambda name, ty: False,  # field-ignoring predicate
+        ignore,  # field-ignoring predicate
         _name_for_debug=None,  # struct name, used only for diagnostic purposes
 ):
+    if ignore is None:
+        ignore = lambda name, ty: False
+
     # Include a fake field at the max offset to help simplify things
     effective_members = [(x.offset, x.name, x.type) for x in structure.members]
     effective_members.append((structure.width, None, None))
@@ -87,11 +98,6 @@ def _structure_fields(
     if not structure.packed and structure.width % structure.alignment != 0:
         # binary ninja allows width to not be a multiple of align, which makes arrays UB
         log.log_error(f'unpacked structure {_name_for_debug or ""} has width {structure.width} but align {structure.alignment}')
-
-    # I use a plugin to fill extremely large gaps with char arrays to make the UI navigable.
-    # These should be counted as gaps.
-    is_filler = lambda name, ty: name and ty and ty.element_type and name.startswith('_') and ty.element_type.width == 1 and ty.width > 64
-    effective_members = [(off, name, ty) for (off, name, ty) in effective_members if not is_filler(name, ty)]
 
     # Edge case: First thing not at offset zero (or no members)
     if effective_members[0][0] != 0:
@@ -117,7 +123,6 @@ def _structure_fields(
 
     if not structure.union:
         yield {'offset': structure.width, 'name': END_MEMBER_NAME, 'type': None}
-
 
 TTREE_VALID_ABBREV_REGEX = re.compile(r'^[_\$#:a-zA-Z][_\$#:a-zA-Z0-9]*$')
 
@@ -149,9 +154,9 @@ class TypeToTTreeConverter:
             if ty.target.type_class == TypeClass.FunctionTypeClass:
                 return self._function_ptr_type_to_ttree(ty.target)
 
-            d = {TAG_KEYWORD: 'ptr', 'inner': self._to_ttree_nested(ty.target)}
-            if ty.const:
-                d['const'] = True
+            d = {TAG_KEYWORD: 'ptr', 'inner': self._to_ttree_nested(ty.target), 'const': ty.const}
+            if not d['const']:
+                del d['const']
             return d
 
         elif ty.type_class == TypeClass.NamedTypeReferenceClass:
@@ -183,7 +188,7 @@ class TypeToTTreeConverter:
             else:
                 assert ty.type_class == TypeClass.StructureTypeClass
                 output[TAG_KEYWORD] = 'union' if ty.structure.union else 'struct'
-                output.update(structure_to_cereal(ty.structure, self))
+                output.update(structure_to_cereal(ty.structure, self, filters=SimpleFilters()))
             assert output[TAG_KEYWORD] is not None
             return output
 
@@ -224,66 +229,29 @@ class TypeToTTreeConverter:
             parameters[0] = FunctionParameter(parameters[0].type, parameters[0].name)  # remove location
 
         def convert_parameter(p):
-            out = {'type': self._to_ttree_flat(p.type)}
-            if p.name:
-                out['name'] = p.name
+            out = {'type': self._to_ttree_flat(p.type), 'name': p.name}
+            if not out['name']:
+                del out['name']
             return out
 
-        out = {TAG_KEYWORD: 'fn-ptr'}
-
-        if abi:
-            out['abi'] = abi
-
-        out['ret'] = self._to_ttree_flat(func_ty.return_value)
-
-        if parameters:
-            out['params'] = list(map(convert_parameter, parameters))
-
+        out = {
+            TAG_KEYWORD: 'fn-ptr',
+            'abi': abi,
+            'ret': self._to_ttree_flat(func_ty.return_value),
+            'params': list(map(convert_parameter, parameters))
+        }
+        if not out['abi']: del out['abi']
+        if not out['params']: del out['params']
         return out
 
 # Turn a nested object ttree into a list. (destructively)
 def _possibly_flatten_nested_ttree(ttree):
+    # Note: These used to be implemented, use 'git log -S' or smth if you want them back. _/o\_
     return ttree  # don't implement flattening for now
-# def _possibly_flatten_nested_ttree(ttree):
-#     if isinstance(ttree, dict) and 'inner' in ttree:
-#         flattened = []
-#         while isinstance(ttree, dict) and 'inner' in ttree:
-#             flattened.append(ttree)
-#             ttree = ttree.pop('inner')
-#         flattened.append(ttree)
-#         return flattened
-#     return ttree
-
-# assert (
-#     _possibly_flatten_nested_ttree({'a': 1, 'inner': {'b': 2, 'inner': {'c': 3}}})
-#     == [{'a': 1}, {'b': 2}, {'c': 3}]
-# )
 
 def _further_abbreviate_flattened_ttree(ttree):
     return ttree  # don't implement abbreviations for now
-# def _further_abbreviate_flattened_ttree(ttree):
-#     if isinstance(ttree, list):
-#         out = []
-#         for x in ttree:
-#             if x == {'type': 'ptr'}:
-#                 out.append('*')
-#             elif isinstance(x, dict) and len(x) == 2 and x['type'] == 'array':
-#                 out.append(x['len'])
-#             else:
-#                 out.append(x)
-#         return out
-#     return ttree
 
 # Turn a list ttree into a nested object. (destructively)
 def _possibly_nest_flattened_ttree(ttree):
-    return ttree
-# def _possibly_nest_flattened_ttree(ttree):
-#     if isinstance(ttree, list):
-#         out = ttree.pop()
-#         while ttree:
-#             new_out = ttree.pop()
-#             assert isinstance(new_out, dict) and 'inner' not in new_out
-#             new_out['inner'] = out
-#             out = new_out
-#         return out
-#     return ttree
+    return ttree  # don't implement for now

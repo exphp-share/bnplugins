@@ -85,7 +85,7 @@ def test_structure_padding():
                 ty = bv.parse_type_string(ty)[0]
             structure.insert(offset, ty, f'field_{i}')
         structure.alignment = max([member.type.alignment for member in structure.members], default=1)  # why do i have to do this manually
-        return list(_structure_fields(structure))
+        return list(_structure_fields(structure, ignore=None))
 
     testcase('gap that is padding')
     members = run_on_struct(0x08, [(0x00, 'int16_t'), (0x04, 'int32_t')])
@@ -141,7 +141,7 @@ def test_packed_struct():
         structure.width = size
         for i, (offset, typestr) in enumerate(data):
             structure.insert(offset, bv.parse_type_string(typestr)[0], f'field_{i}')
-        return list(_structure_fields(structure))
+        return list(_structure_fields(structure, ignore=None))
 
     testcase('smoke test')
     members = run_on_struct(0x0a, [(0x00, 'int16_t'), (0x04, 'int32_t'), (0x08, 'int16_t')])
@@ -158,7 +158,7 @@ def test_packed_struct():
     assert_dict_subset(members[2], {'offset': 0x0a, 'name': END_MEMBER_NAME})
 
 def test_union():
-    from . import _structure_fields
+    from .export_types import _structure_fields
 
     bv = bv_from_c_defs('''
         union Union {
@@ -166,7 +166,7 @@ def test_union():
             int16_t two;
         }
     ''')
-    members = list(_structure_fields(bv.types['Union'].structure))
+    members = list(_structure_fields(bv.types['Union'].structure, ignore=None))
     assert_equal(len(members), 2)
     assert_dict_subset(members[0], {'offset': 0x00, 'name': 'four'})
     assert_dict_subset(members[1], {'offset': 0x00, 'name': 'two'})
