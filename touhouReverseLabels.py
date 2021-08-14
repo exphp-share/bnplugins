@@ -1,10 +1,8 @@
 import math
 import os
 import re
-import typing as tp
-from binaryninja import log, Type, PluginCommand, Symbol, SymbolType, TypeClass, BinaryViewType, Structure
-from binaryninja import LowLevelILOperation, InstructionTextTokenType, LowLevelILOperationAndSize
-import numpy as np
+from binaryninja import log
+import binaryninja as bn
 
 from touhouReverseBnutil import recording_undo, add_label, name_function, get_type_reader
 
@@ -137,7 +135,7 @@ def add_ex_label(bv, addr, value=None):
         bv.set_comment_at(addr, comment)
         rec.enable_auto_rollback()
 
-PluginCommand.register_for_address('Create etEx label', 'Create an etEx label.', add_ex_label)
+bn.PluginCommand.register_for_address('Create etEx label', 'Create an etEx label.', add_ex_label)
 
 # ========================================================================
 
@@ -273,8 +271,6 @@ def add_ecl_labels(bv, addr, ins_offset, label_prefix, eclmap_path, fallback=Non
     jumptable = {k+ins_offset:v for (k,v) in jumptable.items()}
     eclmap = _read_eclmap(eclmap_path)
 
-    ins_labels = ['ecl', 'anm', 'std', 'msg']
-    var_labels = [ecl + ty + ptr for ecl in ins_labels for ty in 'if' for ptr in ['val', 'ptr']]
     if label_prefix[-4:] in ['ival', 'fval', 'iptr', 'fptr']:
         comment_prefix = 'var'
         mapping = eclmap['vars']
@@ -417,7 +413,7 @@ def read_accessed_table(bv, addr):
 
 def _find_address_in_llil(bv, llil):
     def try_finding_type(search_type, llil):
-        if llil.operation == LowLevelILOperation.LLIL_JUMP_TO:
+        if llil.operation == bn.LowLevelILOperation.LLIL_JUMP_TO:
             # This has a shitton of address tokens and its AST is useless to us because there's
             # no way for us to tell what indices go where.
             # Easier for us to just read the table ourselves after locating its token somewhere inside the first operand.
@@ -431,10 +427,10 @@ def _find_address_in_llil(bv, llil):
             raise RuntimeError(f'ambiguous; multiple addresses ({joined})')
         return None
 
-    out = try_finding_type(InstructionTextTokenType.PossibleAddressToken, llil)
+    out = try_finding_type(bn.InstructionTextTokenType.PossibleAddressToken, llil)
     if out is not None:
         return out
-    out = try_finding_type(InstructionTextTokenType.IntegerToken, llil)
+    out = try_finding_type(bn.InstructionTextTokenType.IntegerToken, llil)
     if out is not None:
         return out
     raise RuntimeError(f'no addresses found in tokens')
@@ -459,7 +455,7 @@ def _label_on_draw_instructions(bv, game, func_name, rec):
         priority_value = None
         callback_addr = None
         for instr in function.llil_instructions:
-            if instr.operation == LowLevelILOperation.LLIL_CALL and instr.dest.value == register_on_draw.start:
+            if instr.operation == bn.LowLevelILOperation.LLIL_CALL and instr.dest.value == register_on_draw.start:
                 priority_value = instr.get_possible_reg_values(priority_register).value
 
                 if callback_addr is None:
@@ -489,7 +485,7 @@ def _get_AnmManager_on_draw_suffix(bv, game, addr):
     if game == '11':
         layer_register = 'eax'
         for instr in function.llil_instructions:
-            if instr.operation == LowLevelILOperation.LLIL_CALL and instr.dest.value == render_layer.address:
+            if instr.operation == bn.LowLevelILOperation.LLIL_CALL and instr.dest.value == render_layer.address:
                 layer_value = instr.get_possible_reg_values(layer_register).value
                 if len(function.llil) <= 6:
                     return f'_just_renders_layer_{layer_value:02}'
@@ -507,9 +503,9 @@ def label_tmagic_err_handlers(bv):
     with recording_undo(bv) as rec:
         for func in bv.functions:
             for (ins_1, ins_2) in _window2(func.llil_instructions):
-                if ins_1.operation != LowLevelILOperation.LLIL_PUSH:
+                if ins_1.operation != bn.LowLevelILOperation.LLIL_PUSH:
                     continue
-                if ins_2.operation != LowLevelILOperation.LLIL_PUSH:
+                if ins_2.operation != bn.LowLevelILOperation.LLIL_PUSH:
                     continue
                 operands_1 = ins_1.postfix_operands
                 operands_2 = ins_2.postfix_operands
@@ -527,26 +523,26 @@ def label_tmagic_incref(bv):
         for func in bv.functions:
             instrs = list(func.llil_instructions)
             for (ins_1, ins_2, ins_3) in zip(instrs, instrs[1:], instrs[2:]):
-                if ins_1.operation != LowLevelILOperation.LLIL_SET_REG:
+                if ins_1.operation != bn.LowLevelILOperation.LLIL_SET_REG:
                     continue
-                if ins_2.operation != LowLevelILOperation.LLIL_SET_REG:
+                if ins_2.operation != bn.LowLevelILOperation.LLIL_SET_REG:
                     continue
-                if ins_3.operation != LowLevelILOperation.LLIL_SET_REG:
+                if ins_3.operation != bn.LowLevelILOperation.LLIL_SET_REG:
                     continue
                 operands_1 = ins_1.postfix_operands
                 operands_2 = ins_2.postfix_operands
                 operands_3 = ins_3.postfix_operands
                 if len(operands_1) != 8:
                     continue
-                if not isinstance(operands_1[2], LowLevelILOperationAndSize):
+                if not isinstance(operands_1[2], bn.LowLevelILOperationAndSize):
                     continue
-                if operands_1[2].operation != LowLevelILOperation.LLIL_REG:
+                if operands_1[2].operation != bn.LowLevelILOperation.LLIL_REG:
                     continue
                 if operands_1[3] != -8:
                     continue
-                if not isinstance(operands_1[5], LowLevelILOperationAndSize):
+                if not isinstance(operands_1[5], bn.LowLevelILOperationAndSize):
                     continue
-                if operands_1[5].operation != LowLevelILOperation.LLIL_ADD:
+                if operands_1[5].operation != bn.LowLevelILOperation.LLIL_ADD:
                     continue
 
                 log.log_info(f'{func.start:#x}  {len(instrs)}')

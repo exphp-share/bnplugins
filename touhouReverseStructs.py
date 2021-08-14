@@ -1,11 +1,6 @@
-from binaryninja import Type, TypeClass, Structure, log
+from binaryninja import log
+import binaryninja as bn
 from touhouReverseBnutil import recording_undo, add_label, get_type_reader, open_th_bv
-
-def import_type(bv, source, name):
-    """ Import one or more types (recursively) from another touhou game. """
-    with recording_undo(bv) as rec:
-        with open_th_bv(bv, source, update_analysis=False) as src_bv:
-            import_type_from_bv(bv, src_bv, name, rec=rec)
 
 def import_type(bv, source, name):
     """ Import one or more types (recursively) from another touhou game. """
@@ -34,14 +29,14 @@ def import_type_from_bv(dest_bv, src_bv, name, exist_ok=False, rec=None):
     if src_type is None:
         raise RuntimeError(f'type {name} not found in source bv')
 
-    if src_type.type_class == TypeClass.EnumerationTypeClass:
+    if src_type.type_class == bn.TypeClass.EnumerationTypeClass:
         raise RuntimeError(f'cannot import {name}: enum import not yet implemented')
-    elif src_type.type_class == TypeClass.StructureTypeClass:
-        dest_structure = Structure()
+    elif src_type.type_class == bn.TypeClass.StructureTypeClass:
+        dest_structure = bn.Structure()
         dest_structure.packed = src_type.structure.packed
 
         # first add a dummy type in case it has pointers to itself (or pointers to things that point to it, etc.)
-        dest_bv.define_user_type(name, Type.structure_type(dest_structure))
+        dest_bv.define_user_type(name, bn.Type.structure_type(dest_structure))
         if rec:
             rec.enable_auto_rollback()
         dest_structure = dest_structure.mutable_copy()
@@ -67,14 +62,14 @@ def import_type_from_bv(dest_bv, src_bv, name, exist_ok=False, rec=None):
         if dest_structure.width < dest_final_width:
             dest_structure.width = dest_final_width
 
-        dest_bv.define_user_type(name, Type.structure_type(dest_structure))
+        dest_bv.define_user_type(name, bn.Type.structure_type(dest_structure))
         log.log_warn(f'Imported type {name}')
         return get_named_type_reference(dest_bv, name)
     else:
         raise RuntimeError(f'type {name} cannot be imported from source bv ({repr(src_type.type_class)})')
 
 def _lookup_or_import_type(dest_bv, src_bv, src_type, rec=None, err_loc='<unknown>'):
-    while src_type.type_class == TypeClass.NamedTypeReferenceClass:
+    while src_type.type_class == bn.TypeClass.NamedTypeReferenceClass:
         src_type = src_bv.get_type_by_id(src_type.named_type_reference.type_id)
         if src_type is None:
             raise RuntimeError(
@@ -84,15 +79,15 @@ def _lookup_or_import_type(dest_bv, src_bv, src_type, rec=None, err_loc='<unknow
 
     klass = src_type.type_class
 
-    if klass == TypeClass.ArrayTypeClass:
-        return Type.array(_lookup_or_import_type(dest_bv, src_bv, src_type.element_type, rec=rec, err_loc='element type of ' + err_loc), src_type.count)
+    if klass == bn.TypeClass.ArrayTypeClass:
+        return bn.Type.array(_lookup_or_import_type(dest_bv, src_bv, src_type.element_type, rec=rec, err_loc='element type of ' + err_loc), src_type.count)
 
-    elif klass == TypeClass.PointerTypeClass:
-        return Type.pointer(dest_bv.arch, _lookup_or_import_type(dest_bv, src_bv, src_type.target, rec=rec, err_loc='target type of ' + err_loc))
+    elif klass == bn.TypeClass.PointerTypeClass:
+        return bn.Type.pointer(dest_bv.arch, _lookup_or_import_type(dest_bv, src_bv, src_type.target, rec=rec, err_loc='target type of ' + err_loc))
 
     elif klass in [
-        TypeClass.EnumerationTypeClass,
-        TypeClass.StructureTypeClass,
+        bn.TypeClass.EnumerationTypeClass,
+        bn.TypeClass.StructureTypeClass,
     ]:
         # Use existing types when they exist rather than always recursively copying everything.
         # (e.g. maybe we're importing struct A which has a pointer to struct B, and B changed, but A didn't)
@@ -107,10 +102,10 @@ def _lookup_or_import_type(dest_bv, src_bv, src_type, rec=None, err_loc='<unknow
         return import_type_from_bv(dest_bv, src_bv, name, rec=rec)
 
     # don't know whether it's safe to just return the original for these simple cases
-    elif klass == TypeClass.BoolTypeClass: return Type.bool()
-    elif klass == TypeClass.FloatTypeClass: return Type.float(src_type.width)
-    elif klass == TypeClass.IntegerTypeClass: return Type.int(src_type.width, src_type.signed)
-    elif klass == TypeClass.VoidTypeClass: return Type.void()
+    elif klass == bn.TypeClass.BoolTypeClass: return bn.Type.bool()
+    elif klass == bn.TypeClass.FloatTypeClass: return bn.Type.float(src_type.width)
+    elif klass == bn.TypeClass.IntegerTypeClass: return bn.Type.int(src_type.width, src_type.signed)
+    elif klass == bn.TypeClass.VoidTypeClass: return bn.Type.void()
 
     else:
         raise RuntimeError(f"don't know how to locally resolve {src_type}! {klass}")
@@ -121,7 +116,7 @@ def get_named_type_reference(bv, name, start=None, end=None, size=None):
     t = bv.get_type_by_name(name)
     if t is None:
         return None
-    return Type.named_type(t.registered_name, width=t.width, align=t.alignment)
+    return bn.Type.named_type(t.registered_name, width=t.width, align=t.alignment)
 
 def make_struct_packed(bv, name, packed=True):
     type = bv.get_type_by_name(name)
@@ -129,7 +124,7 @@ def make_struct_packed(bv, name, packed=True):
         raise RuntimeError(f'{name} is not a struct')
     structure = type.structure.mutable_copy()
     structure.packed = packed
-    bv.define_user_type(name, Type.structure_type(structure))
+    bv.define_user_type(name, bn.Type.structure_type(structure))
 
 # ========================================================================
 
@@ -150,7 +145,7 @@ def factor_out_struct(bv, from_name, new_name, new_member='', *, start=None, end
         raise ValueError(f"Cannot factor {new_name} out from itself!")
 
     from_struct = bv.get_type_by_name(from_name).structure
-    new_struct = Structure()
+    new_struct = bn.Structure()
     new_struct.width = size
     new_struct.packed = from_struct.packed
     for member in from_struct.members:
@@ -167,13 +162,13 @@ def factor_out_struct(bv, from_name, new_name, new_member='', *, start=None, end
             raise RuntimeError(f'Requested region would split member {repr(member.name)}')
 
     with recording_undo(bv) as rec:
-        bv.define_user_type(new_name, Type.structure_type(new_struct))
+        bv.define_user_type(new_name, bn.Type.structure_type(new_struct))
         rec.enable_auto_rollback()
 
         # replace the fields in the original struct
         from_struct = from_struct.mutable_copy()
         from_struct.insert(start, get_named_type_reference(bv, new_name), new_member)
-        bv.define_user_type(from_name, Type.structure_type(from_struct))
+        bv.define_user_type(from_name, bn.Type.structure_type(from_struct))
 
 def _strip_member_prefix(name, prefix):
     import re
@@ -222,7 +217,7 @@ def _delete_range_from_single_struct(bv, name, *, start=None, end=None, size=Non
     start, end, size = _resolve_struct_offset_range(start, end, size)
 
     old_struct = bv.get_type_by_name(name).structure
-    new_struct = Structure()
+    new_struct = bn.Structure()
     new_struct.width = old_struct.width - size
     new_struct.packed = old_struct.packed
 
@@ -240,7 +235,7 @@ def _delete_range_from_single_struct(bv, name, *, start=None, end=None, size=Non
         elif rcmp is RANGE_AFTER:
             new_struct.insert(member.offset - size, member.type, member.name)
 
-    bv.define_user_type(name, Type.structure_type(new_struct))
+    bv.define_user_type(name, bn.Type.structure_type(new_struct))
     if rec:
         rec.enable_auto_rollback()
 
@@ -279,7 +274,7 @@ def _insert_space_in_single_struct(bv, name, start, size, *, rec=None):
     log.log_info(f'{name} at {start:#x}: +{size:#x}')
 
     old_struct = bv.get_type_by_name(name).structure
-    new_struct = Structure()
+    new_struct = bn.Structure()
     new_struct.width = old_struct.width + size
     new_struct.packed = old_struct.packed
 
@@ -294,7 +289,7 @@ def _insert_space_in_single_struct(bv, name, start, size, *, rec=None):
         else:
             raise RuntimeError(f'Requested offset would split member {repr(member.name)}')
 
-    bv.define_user_type(name, Type.structure_type(new_struct))
+    bv.define_user_type(name, bn.Type.structure_type(new_struct))
     if rec:
         rec.enable_auto_rollback()
 
@@ -345,7 +340,7 @@ def _build_dependents_dag(bv):
         # It'd be nice if we could at least *detect* them and bail out (e.g. put them
         # in the dep tree, fail if they show up in the topological order), but that's a
         # lot of work for little benefit.
-        if ty.type_class == TypeClass.StructureTypeClass:
+        if ty.type_class == bn.TypeClass.StructureTypeClass:
             dependencies[ty_name] = set(name for (_, name, _) in _get_embedded_struct_fields(bv, ty.structure))
     dependents = _reverse_dag(dependencies)
     return dependents
@@ -430,12 +425,12 @@ def _get_embedded_struct_fields(bv, struct):
     for member in struct.members:
         ty = member.type
         multiplicity = 1
-        if ty.type_class == TypeClass.ArrayTypeClass:
+        if ty.type_class == bn.TypeClass.ArrayTypeClass:
             multiplicity = ty.count
             ty = ty.element_type
 
         # embedded structs are always(?) type references
-        if ty.type_class != TypeClass.NamedTypeReferenceClass:
+        if ty.type_class != bn.TypeClass.NamedTypeReferenceClass:
             continue
 
         name = ty.named_type_reference.name
@@ -454,9 +449,9 @@ def add_struct_comment(bv, name):
         if struct.members and struct.members[-1].offset == struct.width:
             return  # already has a zero-sized member at the end
 
-        comment_type = Type.array(bv.get_type_by_name('zCOMMENT'), 0)
+        comment_type = bn.Type.array(bv.get_type_by_name('zCOMMENT'), 0)
         struct.insert(struct.width, comment_type, '__comment')
-        bv.define_user_type(name, Type.structure_type(struct))
+        bv.define_user_type(name, bn.Type.structure_type(struct))
         rec.enable_auto_rollback()
 
 # ========================================================================

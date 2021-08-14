@@ -1,10 +1,8 @@
 import typing as tp
 import re
 
-from binaryninja import (
-    BinaryView, Type, log, TypeClass,
-    FunctionParameter, QualifiedName,
-)
+from binaryninja import log
+import binaryninja as bn
 
 from .common import TAG_KEYWORD, TypeTree, lookup_named_type_definition, window2
 from .config import DEFAULT_FILTERS, SymbolFilters, SimpleFilters
@@ -12,8 +10,8 @@ from .config import DEFAULT_FILTERS, SymbolFilters, SimpleFilters
 # ==============================================================================
 
 def create_types_file_json(
-        bv: BinaryView,
-        types_to_export: tp.Mapping[QualifiedName, Type],
+        bv: bn.BinaryView,
+        types_to_export: tp.Mapping[bn.QualifiedName, bn.Type],
         common_types: tp.Dict[str, TypeTree] = {},
         filters: SymbolFilters = DEFAULT_FILTERS,
 ):
@@ -21,8 +19,8 @@ def create_types_file_json(
     return _create_types_file_json(bv, types_to_export, common_types, filters)
 
 def _create_types_file_json(
-        bv: BinaryView,
-        types_to_export: tp.Mapping[QualifiedName, Type],
+        bv: bn.BinaryView,
+        types_to_export: tp.Mapping[bn.QualifiedName, bn.Type],
         common_types: tp.Dict[str, TypeTree],
         filters: SymbolFilters,
 ):
@@ -145,13 +143,13 @@ class TypeToTTreeConverter:
     # cannot be chained through.  (e.g. an object field not called 'inner').
     # Otherwise they should use '_to_ttree_nested'.
     def _to_ttree_nested(self, ty):
-        if ty.type_class == TypeClass.ArrayTypeClass:
+        if ty.type_class == bn.TypeClass.ArrayTypeClass:
             return {TAG_KEYWORD: 'array', 'len': ty.count, 'inner': self._to_ttree_nested(ty.element_type)}
 
-        elif ty.type_class == TypeClass.PointerTypeClass:
+        elif ty.type_class == bn.TypeClass.PointerTypeClass:
             # FIXME this check should probably resolve NamedTypeReferences in the target,
             # in case there are typedefs to bare (non-ptr) function types.
-            if ty.target.type_class == TypeClass.FunctionTypeClass:
+            if ty.target.type_class == bn.TypeClass.FunctionTypeClass:
                 return self._function_ptr_type_to_ttree(ty.target)
 
             d = {TAG_KEYWORD: 'ptr', 'inner': self._to_ttree_nested(ty.target), 'const': ty.const}
@@ -159,7 +157,7 @@ class TypeToTTreeConverter:
                 del d['const']
             return d
 
-        elif ty.type_class == TypeClass.NamedTypeReferenceClass:
+        elif ty.type_class == bn.TypeClass.NamedTypeReferenceClass:
             if ty.registered_name is not None:
                 # A raw typedef, instead of a reference to one.
                 # Typically to get this, you'd have to call `bv.get_type_by_name` on a typedef name.
@@ -169,7 +167,7 @@ class TypeToTTreeConverter:
             # could be a 'struct Ident' field, or a regular typedef
             return {TAG_KEYWORD: 'named', 'name': str(ty.named_type_reference.name)}
 
-        elif ty.type_class in [TypeClass.StructureTypeClass, TypeClass.EnumerationTypeClass]:
+        elif ty.type_class in [bn.TypeClass.StructureTypeClass, bn.TypeClass.EnumerationTypeClass]:
             if ty.registered_name is not None:
                 # A raw struct, enum, or union declaration, instead of a reference to one.
                 #
@@ -182,33 +180,33 @@ class TypeToTTreeConverter:
                 'size': hex(ty.width),
                 'align': ty.alignment,
             }
-            if ty.type_class == TypeClass.EnumerationTypeClass:
+            if ty.type_class == bn.TypeClass.EnumerationTypeClass:
                 output[TAG_KEYWORD] = 'enum'
                 output.update(enum_to_cereal(ty.enumeration))
             else:
-                assert ty.type_class == TypeClass.StructureTypeClass
+                assert ty.type_class == bn.TypeClass.StructureTypeClass
                 output[TAG_KEYWORD] = 'union' if ty.structure.union else 'struct'
                 output.update(structure_to_cereal(ty.structure, self, filters=SimpleFilters()))
             assert output[TAG_KEYWORD] is not None
             return output
 
-        elif ty.type_class == TypeClass.VoidTypeClass:
+        elif ty.type_class == bn.TypeClass.VoidTypeClass:
             return {TAG_KEYWORD: 'void'}
-        elif ty.type_class == TypeClass.IntegerTypeClass:
+        elif ty.type_class == bn.TypeClass.IntegerTypeClass:
             return {TAG_KEYWORD: 'int', 'signed': bool(ty.signed), 'size': ty.width}
-        elif ty.type_class == TypeClass.FloatTypeClass:
+        elif ty.type_class == bn.TypeClass.FloatTypeClass:
             return {TAG_KEYWORD: 'float', 'size': ty.width}
-        elif ty.type_class == TypeClass.BoolTypeClass:
+        elif ty.type_class == bn.TypeClass.BoolTypeClass:
             return {TAG_KEYWORD: 'int', 'signed': False, 'size': ty.width}
-        elif ty.type_class == TypeClass.WideCharTypeClass:
+        elif ty.type_class == bn.TypeClass.WideCharTypeClass:
             return {TAG_KEYWORD: 'int', 'signed': False, 'size': ty.width}
 
-        elif ty.type_class == TypeClass.FunctionTypeClass:
+        elif ty.type_class == bn.TypeClass.FunctionTypeClass:
             raise RuntimeError(f"bare FunctionTypeClass not supported (only function pointers): {ty}")
-        elif ty.type_class == TypeClass.ValueTypeClass:
+        elif ty.type_class == bn.TypeClass.ValueTypeClass:
             # not sure where you get one of these
             raise RuntimeError(f"ValueTypeClass not supported: {ty}")
-        elif ty.type_class == TypeClass.VarArgsTypeClass:
+        elif ty.type_class == bn.TypeClass.VarArgsTypeClass:
             # I don't know how you get this;  va_list is just an alias for char*,
             # and variadic functions merely set .has_variable_arguments = True.
             raise RuntimeError(f"VarArgsTypeClass not supported: {ty}")
@@ -226,7 +224,7 @@ class TypeToTTreeConverter:
             and not any(p.location for p in parameters[1:])
         ):
             abi = 'fastcall'
-            parameters[0] = FunctionParameter(parameters[0].type, parameters[0].name)  # remove location
+            parameters[0] = bn.FunctionParameter(parameters[0].type, parameters[0].name)  # remove location
 
         def convert_parameter(p):
             out = {'type': self._to_ttree_flat(p.type), 'name': p.name}

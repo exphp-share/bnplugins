@@ -7,16 +7,13 @@ from __future__ import print_function
 # >>> import exphp_export; exphp_export.run(bv)
 
 import os
-import abc
 import json
 import glob
 from collections import defaultdict
 import contextlib
 import typing as tp
-from binaryninja import (
-    BinaryView, Symbol, SymbolType, Type, log, BinaryViewType,
-    QualifiedName, TypeLibrary
-)
+from binaryninja import log
+import binaryninja as bn
 
 from .common import TypeTree, TAG_KEYWORD
 from .config import SymbolFilters, DEFAULT_FILTERS
@@ -61,7 +58,7 @@ def _export(bv, path, common_types, filters):
 
 def open_bv(path, **kw):
     # Note: This is now a context manager, hurrah!
-    return BinaryViewType.get_view_of_file(str(path), **kw)
+    return bn.BinaryViewType.get_view_of_file(str(path), **kw)
 
 def _compute_md5(path):
     import hashlib
@@ -74,7 +71,15 @@ def dict_get_path(d, parts, default=None):
         d = d[part]
     return d
 
-def export_all(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, force=False, emit_status=print, update_analysis=False, filters=DEFAULT_FILTERS):
+def export_all(
+        games=GAMES,
+        bndb_dir=BNDB_DIR,
+        json_dir=JSON_DIR,
+        force=False,
+        emit_status=print,
+        update_analysis=False,
+        filters=DEFAULT_FILTERS,
+):
     # we will autocreate some subdirs, but for safety against mistakes
     # we won't create anything above the output dir itself
     _require_dir_exists(os.path.dirname(json_dir))
@@ -138,7 +143,7 @@ class SymbolsToWrite:
     class Static(tp.NamedTuple):
         address: int
         name: str
-        bn_type: Type
+        bn_type: bn.Type
         comment: tp.Optional[str]
 
     class Func(tp.NamedTuple):
@@ -175,7 +180,7 @@ def _get_exported_symbols(bv, filters: SymbolFilters):
         if isinstance(symbol, list):
             symbol = symbol[0]  # FIXME: document why
         address = symbol.address
-        if symbol.type == SymbolType.DataSymbol:
+        if symbol.type == bn.SymbolType.DataSymbol:
             case_data = filters.as_case_label(name)
             if case_data:
                 cases[case_data.table_name].append(SymbolsToWrite.Case(address, case_data.case))
@@ -192,7 +197,7 @@ def _get_exported_symbols(bv, filters: SymbolFilters):
             comment = bv.get_comment_at(address) or None  # note: bn returns '' for no comment
             statics.append(SymbolsToWrite.Static(address, export_name, t, comment))
 
-        elif symbol.type == SymbolType.FunctionSymbol:
+        elif symbol.type == bn.SymbolType.FunctionSymbol:
             export_name = filters.as_useful_func_symbol(name)
             if export_name is None:
                 continue
@@ -263,10 +268,10 @@ def _export_types(bv, path, common_types: tp.Dict[str, TypeTree], filters: Symbo
     _export_types_from_dict(bv, os.path.join(path, 'types-own.json'), our_types, common_types, filters)
     _export_types_from_dict(bv, os.path.join(path, 'types-ext.json'), ext_types, common_types, filters)
 
-def _export_types_from_type_library(bv, path, type_library: TypeLibrary, filters: SymbolFilters):
+def _export_types_from_type_library(bv, path, type_library: bn.TypeLibrary, filters: SymbolFilters):
     """ Write a single file like ``types-own.json`` containing all types from a type library. """
     # Totally ignore the input bv and create one with no other type libraries to avoid competition
-    bv = BinaryView()
+    bv = bn.BinaryView()
     bv.add_type_library(type_library)
     # trick the bv into actually loading all of the types
     for name in type_library.named_types:
@@ -284,9 +289,9 @@ def _export_pe_types(bv, path, filters: SymbolFilters):
     _export_types_from_dict(bv, path, types, common_types={}, filters=filters)
 
 def _export_types_from_dict(
-        bv: BinaryView,
+        bv: bn.BinaryView,
         path: str,
-        types_to_export: tp.Mapping[QualifiedName, Type],
+        types_to_export: tp.Mapping[bn.QualifiedName, bn.Type],
         common_types: tp.Dict[str, TypeTree],
         filters: SymbolFilters,
 ):
@@ -333,13 +338,13 @@ def export_version_props(bv, path):
 def import_all_functions(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, emit_status=print):
     return _import_all_symbols(
         games=games, bndb_dir=bndb_dir, json_dir=json_dir, emit_status=print,
-        json_filename='funcs.json', symbol_type=SymbolType.FunctionSymbol,
+        json_filename='funcs.json', symbol_type=bn.SymbolType.FunctionSymbol,
     )
 
 def import_all_statics(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, emit_status=print):
     return _import_all_symbols(
         games=games, bndb_dir=bndb_dir, json_dir=json_dir, emit_status=print,
-        json_filename='statics.json', symbol_type=SymbolType.DataSymbol,
+        json_filename='statics.json', symbol_type=bn.SymbolType.DataSymbol,
     )
 
 # =================================================
@@ -371,9 +376,9 @@ def _import_all_symbols(games, bndb_dir, json_dir, json_filename, symbol_type, e
     emit_status("done")
 
 def import_funcs_from_json(bv, funcs, emit_status=None):
-    return _import_symbols_from_json_v1(bv, funcs, SymbolType.FunctionSymbol, emit_status=emit_status)
+    return _import_symbols_from_json_v1(bv, funcs, bn.SymbolType.FunctionSymbol, emit_status=emit_status)
 def import_statics_from_json(bv, statics, emit_status=None):
-    return _import_symbols_from_json_v1(bv, statics, SymbolType.DataSymbol, emit_status=emit_status)
+    return _import_symbols_from_json_v1(bv, statics, bn.SymbolType.DataSymbol, emit_status=emit_status)
 
 def _import_symbols_from_json_v1(bv, symbols, symbol_type, emit_status=None):
     changed = False
@@ -385,12 +390,12 @@ def _import_symbols_from_json_v1(bv, symbols, symbol_type, emit_status=None):
             if name == existing.name:
                 continue
             else:
-                bv.define_user_symbol(Symbol(symbol_type, addr, name))
+                bv.define_user_symbol(bn.Symbol(symbol_type, addr, name))
                 changed = True
                 if emit_status:
                     emit_status(f'rename {existing.name} => {name}')
         else:
-            bv.define_user_symbol(Symbol(symbol_type, addr, name))
+            bv.define_user_symbol(bn.Symbol(symbol_type, addr, name))
             changed = True
             if emit_status:
                 emit_status(f'name {existing.name}')

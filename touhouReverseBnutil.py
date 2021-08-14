@@ -1,11 +1,8 @@
 import contextlib
 import struct
-import math
 import os
-import typing as tp
-from binaryninja import log, Type, PluginCommand, Symbol, SymbolType, TypeClass, BinaryViewType, Structure
-from binaryninja import LowLevelILOperation, InstructionTextTokenType
-import numpy as np
+from binaryninja import log
+import binaryninja as bn
 
 # ========================================================================
 
@@ -64,10 +61,10 @@ def recording_undo(bv):
 # ========================================================================
 
 def name_function(bv, addr, name):
-    bv.define_user_symbol(Symbol(SymbolType.FunctionSymbol, addr, name))
+    bv.define_user_symbol(bn.Symbol(bn.SymbolType.FunctionSymbol, addr, name))
 
 def name_symbol(bv, addr, name):
-    bv.define_user_symbol(Symbol(SymbolType.DataSymbol, addr, name))
+    bv.define_user_symbol(bn.Symbol(bn.SymbolType.DataSymbol, addr, name))
 
 add_label = name_symbol
 
@@ -88,9 +85,9 @@ __FLOAT_READERS = { 4: read_f32, 8: read_f64, }
 __INT_READERS = { 1: read_i8, 2: read_i16, 4: read_i32, 8: read_i64, }
 __UINT_READERS = { 1: read_u8, 2: read_u16, 4: read_u32, 8: read_u64, }
 def get_type_reader(type):
-    if type.type_class == TypeClass.FloatTypeClass:
+    if type.type_class == bn.TypeClass.FloatTypeClass:
         return __FLOAT_READERS[type.width]
-    if type.type_class == TypeClass.IntegerTypeClass:
+    if type.type_class == bn.TypeClass.IntegerTypeClass:
         if type.signed:
             return __INT_READERS[type.width]
         else:
@@ -99,7 +96,7 @@ def get_type_reader(type):
 
 def open_bv(path, **kw):
     # Note: This is now a context manager, hurrah!
-    return BinaryViewType.get_view_of_file(path, **kw)
+    return bn.BinaryViewType.get_view_of_file(path, **kw)
 
 GAME_VERSIONS = {
     'th06': 'v1.02h',
@@ -123,7 +120,7 @@ GAME_VERSIONS = {
 
 def open_th_bv(bv, source, update_analysis=False, **kw):
     """ Open a touhou bndb.  Another touhou bv is used to get a search directory.
-    
+
     This is a context manager. (usable in `with`) """
     if 'v' not in source.lower():
         source += '.' + GAME_VERSIONS[source]
@@ -132,7 +129,7 @@ def open_th_bv(bv, source, update_analysis=False, **kw):
     if os.sep not in source and '/' not in source:
         source = os.path.join(os.path.dirname(bv.file.filename), source)
 
-    return BinaryViewType.get_view_of_file(source, update_analysis=update_analysis, **kw)
+    return bn.BinaryViewType.get_view_of_file(source, update_analysis=update_analysis, **kw)
 
 # ========================================================================
 
@@ -149,7 +146,7 @@ def llil_at(bv, addr):
     func = funcs[0]
 
     llil = None
-    for i in range(20):
+    for _ in range(20):
         llil = func.get_low_level_il_at(addr)
         if llil: return llil
         addr -= 1
@@ -191,7 +188,7 @@ class Address(int):
     def __mul__(self, other): return Address(super().__mul__(other))
     def __floordiv__(self, other): return Address(super().__floordiv__(other))
     def __mod__(self, other): return Address(super().__mod__(other))
-    def __pow__(self, *args): return Address(super().__pow__(*args))
+    def __pow__(self, other, *args): return Address(super().__pow__(other, *args))
     def __lshift__(self, other): return Address(super().__lshift__(other))
     def __rshift__(self, other): return Address(super().__rshift__(other))
     def __and__(self, other): return Address(super().__and__(other))

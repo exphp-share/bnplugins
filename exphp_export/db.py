@@ -1,5 +1,7 @@
 import re
-from binaryninja import TypeClass, Type, log
+from binaryninja import log
+import binaryninja as bn
+
 from touhouReverseBnutil import recording_undo
 
 class Metadata:
@@ -74,20 +76,20 @@ class BinaryViewChanger:
         if ty is None:
             return False
 
-        if ty.type_class == TypeClass.StructureTypeClass:
+        if ty.type_class == bn.TypeClass.StructureTypeClass:
             structure = ty.structure.mutable_copy()
             i = self._get_named_member_index(structure, old)
             if i is None:
                 return False
             structure.replace(i, structure.members[i].type, new)
-            new_ty = Type.structure_type(structure)
-        elif ty.type_class == TypeClass.EnumerationTypeClass:
+            new_ty = bn.Type.structure_type(structure)
+        elif ty.type_class == bn.TypeClass.EnumerationTypeClass:
             enumeration = ty.enumeration.mutable_copy()
             i = self._get_named_member_index(enumeration, old)
             if i is None:
                 return False
             enumeration.replace(i, new, enumeration.members[i].value)
-            new_ty = Type.enumeration_type(self.bv.arch, enumeration, width=ty.width, sign=ty.signed)
+            new_ty = bn.Type.enumeration_type(self.bv.arch, enumeration, width=ty.width, sign=ty.signed)
         else:
             return False
 

@@ -1,10 +1,11 @@
 import weakref
+import typing as tp
 import struct
 import os
 from collections import defaultdict
 from binaryninja import log
 
-_BYTE_PAIR_INDEX = weakref.WeakKeyDictionary()
+_BYTE_PAIR_INDEX = weakref.WeakKeyDictionary()  # type: ignore
 
 # These take either a single value or an iterable of them (producing the union of results).
 def search_f32(bv, arg): return _search_maybe_iter(bv, arg, lambda x: struct.pack('<f', x))
@@ -19,7 +20,7 @@ def search_u8(bv, arg): return _search_maybe_iter(bv, arg, lambda x: struct.pack
 def search_i8(bv, arg): return _search_maybe_iter(bv, arg, lambda x: struct.pack('<b', x))
 
 def _search_maybe_iter(bv, arg, packer):
-    from collections import Iterable
+    from collections.abc import Iterable
 
     if not isinstance(arg, Iterable):
         arg = [arg]

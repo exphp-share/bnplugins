@@ -45,7 +45,7 @@ class ExphpSymbolFilters(SymbolFilters):
     def as_useful_func_symbol(self, name):
         # Done by binja, e.g. 'j_sub_45a83#4'
         if '#' in name:
-            return False
+            return None
 
         # these suffixes don't convey enough info for the name to be worth sharing if there's nothing else
         s = name  # keep name as the original name

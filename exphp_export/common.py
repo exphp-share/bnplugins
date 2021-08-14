@@ -1,11 +1,11 @@
 import typing as tp
 
+import binaryninja as bn
+
 TAG_KEYWORD = 'is'
 TypeTree = tp.Dict
 
-from binaryninja import QualifiedName, Type, TypeClass
-
-def lookup_named_type_definition(bv, name: QualifiedName) -> tp.Tuple[str, tp.Optional[Type]]:
+def lookup_named_type_definition(bv, name: bn.QualifiedName) -> tp.Tuple[str, tp.Optional[bn.Type]]:
     """
     Look up a named type, while dealing with all of binary ninja's typedef oddities.
 
@@ -22,9 +22,9 @@ def lookup_named_type_definition(bv, name: QualifiedName) -> tp.Tuple[str, tp.Op
 
     # Binja wouldn't have auto-expanded a typedef referring to a struct or enum,
     # so in these cases we can be sure that 'name' refers to the struct/enum itself.
-    if ty.type_class == TypeClass.EnumerationTypeClass:
+    if ty.type_class == bn.TypeClass.EnumerationTypeClass:
         return ('enum', None)
-    elif ty.type_class == TypeClass.StructureTypeClass:
+    elif ty.type_class == bn.TypeClass.StructureTypeClass:
         return ('union' if ty.structure.union else 'struct', None)
 
     # If we make it here, it's a typedef.
@@ -36,7 +36,7 @@ def lookup_named_type_definition(bv, name: QualifiedName) -> tp.Tuple[str, tp.Op
     # - Otherwise, binja returns a type representing the expansion (and you lose
     #   all context related to the typedef)
     if (
-        ty.type_class == TypeClass.NamedTypeReferenceClass
+        ty.type_class == bn.TypeClass.NamedTypeReferenceClass
         and ty.registered_name
         and ty.registered_name.name == name
     ):
@@ -47,7 +47,7 @@ def lookup_named_type_definition(bv, name: QualifiedName) -> tp.Tuple[str, tp.Op
         # of producing an unexpanded typedef that points to an unnamed type.
         # (dodging a nasty corner case when dealing with a typedef to a typedef to an unnamed type)
         expn_type_name = ty.named_type_reference.name
-        return ('typedef', Type.named_type_from_registered_type(bv, expn_type_name))
+        return ('typedef', bn.Type.named_type_from_registered_type(bv, expn_type_name))
     else:
         # This is the expansion.
         return ('typedef', ty)
@@ -62,12 +62,12 @@ def lookup_type_id(bv, type_id):
         ty = bv.get_type_by_name(name)
         # See comments in lookup_named_type_definition
         if ty.type_class not in [
-            TypeClass.StructureTypeClass,    # a struct/union (and not a typedef to one)
-            TypeClass.EnumerationTypeClass,  # a enum (and not a typedef to one)
+            bn.TypeClass.StructureTypeClass,    # a struct/union (and not a typedef to one)
+            bn.TypeClass.EnumerationTypeClass,  # a enum (and not a typedef to one)
         ]:
             # We enter this branch IFF it is a typedef.
             # 'ty' is unreliable but the following is guaranteed to work
-            return Type.named_type_from_registered_type(bv, name)
+            return bn.Type.named_type_from_registered_type(bv, name)
 
     # Not a typedef, so we can trust the normal lookup.
     return bv.get_type_by_id(type_id)

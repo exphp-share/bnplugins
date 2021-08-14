@@ -1,9 +1,5 @@
-import contextlib
-import math
-import os
-import typing as tp
-from binaryninja import log, Type, PluginCommand, Symbol, SymbolType, TypeClass, BinaryViewType, Structure
-from binaryninja import LowLevelILOperation, InstructionTextTokenType
+from binaryninja import log
+import binaryninja as bn
 import numpy as np
 from importlib import reload as _reload
 
@@ -85,7 +81,7 @@ def name_func_called_at(bv, addr, desired_name):
     if any(func.name == desired_name for func in bv.functions):
         raise RuntimeError(f'function with name {repr(desired_name)} already exists')
 
-    bv.define_user_symbol(Symbol(SymbolType.FunctionSymbol, called_addr, desired_name))
+    bv.define_user_symbol(bn.Symbol(bn.SymbolType.FunctionSymbol, called_addr, desired_name))
     if jump_ins:
         name_func_called_at(bv, jump_ins, desired_name[:-len('__stub')])
 
@@ -98,7 +94,7 @@ def rename_func_prefix(bv, old_prefix, new_prefix):
             if func.name.startswith(old_prefix):
                 suffix = func.name[len(old_prefix):]
                 new_name = new_prefix + suffix
-                bv.define_user_symbol(Symbol(SymbolType.FunctionSymbol, func.start, new_name))
+                bv.define_user_symbol(bn.Symbol(bn.SymbolType.FunctionSymbol, func.start, new_name))
                 rec.enable_auto_rollback()
 
 def fix_vtable_method_names(bv, addr, type_name=None):
@@ -118,7 +114,7 @@ def fix_vtable_method_names(bv, addr, type_name=None):
         if not symbol:
             log.log_error(f'no symbol defined at {addr}')
             return None
-        if symbol.type != SymbolType.FunctionSymbol:
+        if symbol.type != bn.SymbolType.FunctionSymbol:
             log.log_error(f'{addr} is not a function')
             return None
         if '::' not in symbol.name:
@@ -141,18 +137,18 @@ def fix_vtable_method_names(bv, addr, type_name=None):
             log.log_error(f'A symbol already exists named {repr(desired_name)}! Skipping...')
             continue
 
-        bv.define_user_symbol(Symbol(SymbolType.FunctionSymbol, function_address, desired_name))
+        bv.define_user_symbol(bn.Symbol(bn.SymbolType.FunctionSymbol, function_address, desired_name))
 
-#PluginCommand.register_for_address('Convert to single-precision float', 'Set the type at this location to a float', convert_to_float)
+#bn.PluginCommand.register_for_address('Convert to single-precision float', 'Set the type at this location to a float', convert_to_float)
 
-PluginCommand.register_for_address('Fix VTable method names', 'Given an address anywhere inside a VTable in static memory, rename the referenced functions after the vtable struct fields.', fix_vtable_method_names)
-PluginCommand.register_for_address('Name initialize method', 'Name initialize method', name_initialize_method_at)
-PluginCommand.register_for_address('Name constructor method', 'Name constructor method', name_constructor_method_at)
-PluginCommand.register_for_address('Name destructor method', 'Name destructor method', name_destructor_method_at)
-PluginCommand.register_for_address('Name on_tick method', 'Name on_tick method', name_on_tick_method_at)
-PluginCommand.register_for_address('Name on_draw method', 'Name on_draw method', name_on_draw_method_at)
-PluginCommand.register_for_address('Name on_cleanup method', 'Name on_cleanup method', name_on_cleanup_method_at)
-PluginCommand.register_for_address('Name on_registration method', 'Name on_registration method', name_on_registration_method_at)
+bn.PluginCommand.register_for_address('Fix VTable method names', 'Given an address anywhere inside a VTable in static memory, rename the referenced functions after the vtable struct fields.', fix_vtable_method_names)
+bn.PluginCommand.register_for_address('Name initialize method', 'Name initialize method', name_initialize_method_at)
+bn.PluginCommand.register_for_address('Name constructor method', 'Name constructor method', name_constructor_method_at)
+bn.PluginCommand.register_for_address('Name destructor method', 'Name destructor method', name_destructor_method_at)
+bn.PluginCommand.register_for_address('Name on_tick method', 'Name on_tick method', name_on_tick_method_at)
+bn.PluginCommand.register_for_address('Name on_draw method', 'Name on_draw method', name_on_draw_method_at)
+bn.PluginCommand.register_for_address('Name on_cleanup method', 'Name on_cleanup method', name_on_cleanup_method_at)
+bn.PluginCommand.register_for_address('Name on_registration method', 'Name on_registration method', name_on_registration_method_at)
 
 # ========================================================================
 
@@ -162,7 +158,7 @@ def repack_anm_fields(bv, addr):
     t = bv.types[repack_name]
     s = t.structure.mutable_copy()
 
-    remove_indices = [index for (index, field) in enumerate(s.members) if field.type.element_type == Type.char() and field.name.startswith('__')]
+    remove_indices = [index for (index, field) in enumerate(s.members) if field.type.element_type == bn.Type.char() and field.name.startswith('__')]
     for index in reversed(remove_indices):
         s.remove(index)
 
@@ -179,11 +175,11 @@ def repack_anm_fields(bv, addr):
             unknown_ranges.append(after)
 
     for i, r in enumerate(unknown_ranges):
-        s.insert(r.start, Type.array(Type.char(), len(r)), f'__filler_{i:02}')
+        s.insert(r.start, bn.Type.array(bn.Type.char(), len(r)), f'__filler_{i:02}')
 
-    bv.define_user_type(repack_name, Type.structure_type(s))
+    bv.define_user_type(repack_name, bn.Type.structure_type(s))
 
-PluginCommand.register_for_address('Repack AnmManagerFields', 'Repack AnmManagerFields', repack_anm_fields)
+bn.PluginCommand.register_for_address('Repack AnmManagerFields', 'Repack AnmManagerFields', repack_anm_fields)
 
 # ========================================================================
 
@@ -353,7 +349,7 @@ def find_strings(bv, hex=False):
     results = {}
     for func_start, llil in cached_llil(bv).items():
         for ins in llil:
-            if ins.operation != LowLevelILOperation.LLIL_PUSH:
+            if ins.operation != bn.LowLevelILOperation.LLIL_PUSH:
                 continue
             for str_addr in [op for op in ins.prefix_operands if isinstance(op, int) and op in rdata_range]:
                 text = read_possible_shift_jis(bv, str_addr)

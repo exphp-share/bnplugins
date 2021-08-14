@@ -1,6 +1,3 @@
-import contextlib
-import math
-import os
 import touhouReverse as r
 
 def load_map(bv, map_path):
@@ -90,7 +87,7 @@ class SegmentMap:
         if start != 0:
             return
         self.regions.append((name, segment))
-    
+
     def effective_address(self, segment, offset):
         pass
         # for section, region_segment, region_start, region_length in self.regions:
