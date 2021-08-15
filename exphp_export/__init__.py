@@ -14,8 +14,9 @@ import contextlib
 import typing as tp
 from binaryninja import log
 import binaryninja as bn
+from pathlib import Path
 
-from .common import TypeTree, TAG_KEYWORD
+from .common import TypeTree, TAG_KEYWORD, PathLike
 from .config import SymbolFilters, DEFAULT_FILTERS
 from .export_types import _create_types_file_json, TypeToTTreeConverter
 
@@ -25,7 +26,6 @@ from .test import run_tests  # re-export
 BNDB_DIR = r"E:\Downloaded Software\Touhou Project"
 JSON_DIR = r"F:\asd\clone\th16re-data\data"
 MD5SUMS_FILENAME = 'md5sums.json'
-ALL_MD5_KEYS = ['bndb', 'funcs.json', 'labels.json', 'statics.json', 'types-own.json']
 COMMON_DIRNAME = '_common' # FIXME: rename to _modules
 SHARED_DIRNAME = '_shared'
 GAMES = [
@@ -48,19 +48,20 @@ GAMES = [
     "th17.v1.00b",
     "th18.v1.00a",
 ]
+JsonFormatVersion = int  # tp.Literal[1, 2]  # needs python 3.8
 
-def export(bv, path, common_types={}, filters=DEFAULT_FILTERS):
-    return _export(bv, path, common_types, filters)
+def export(bv, path, common_types={}, version=2, filters=DEFAULT_FILTERS):
+    return _export(bv, path, common_types, version, filters)
 
-def _export(bv, path, common_types, filters):
-    _export_symbols(bv, path=path, filters=filters)
-    _export_types(bv, path=path, common_types=common_types, filters=filters)
+def _export(bv: bn.BinaryView, path: PathLike, common_types, version: JsonFormatVersion, filters: SymbolFilters):
+    _export_symbols(bv, path=path, filters=filters, version=version)
+    _export_types(bv, path=path, common_types=common_types, filters=filters, version=version)
 
-def open_bv(path, **kw):
+def open_bv(path: PathLike, **kw):
     # Note: This is now a context manager, hurrah!
     return bn.BinaryViewType.get_view_of_file(str(path), **kw)
 
-def _compute_md5(path):
+def _compute_md5(path: PathLike):
     import hashlib
     return hashlib.md5(open(path,'rb').read()).hexdigest()
 
@@ -72,35 +73,36 @@ def dict_get_path(d, parts, default=None):
     return d
 
 def export_all(
-        games=GAMES,
-        bndb_dir=BNDB_DIR,
-        json_dir=JSON_DIR,
-        force=False,
-        emit_status=print,
-        update_analysis=False,
-        filters=DEFAULT_FILTERS,
+        games = GAMES,
+        bndb_dir: PathLike = BNDB_DIR,
+        json_dir: PathLike = JSON_DIR,
+        force: bool = False,
+        version: JsonFormatVersion = 1,
+        emit_status: tp.Callable = print,
+        update_analysis: bool = False,
+        filters: SymbolFilters = DEFAULT_FILTERS,
 ):
     # we will autocreate some subdirs, but for safety against mistakes
     # we won't create anything above the output dir itself
-    _require_dir_exists(os.path.dirname(json_dir))
+    _require_dir_exists(Path(json_dir).parent)
 
     old_md5sums = {} if force else _read_md5s_file(json_dir)
 
-    common_types = _read_common_types(json_dir)
+    common_types = _read_common_types(json_dir, version=version)
 
     for game in games:
         bndb_path = os.path.join(bndb_dir, f'{game}.bndb')
         json_subdir = os.path.join(json_dir, f'{game}')
-        if _compute_md5(bndb_path) == _lookup_md5(old_md5sums, game, 'bndb'):
+        if _compute_md5(bndb_path) == _lookup_md5(old_md5sums, game, 'bndb', version=version):
             emit_status(f"{game}: up to date")
             continue
 
         emit_status(f"{game}: exporting...")
         with open_bv(bndb_path, update_analysis=update_analysis) as bv:
             os.makedirs(json_subdir, exist_ok=True)
-            _export(bv, path=json_subdir, common_types=common_types, filters=filters)
+            _export(bv, path=json_subdir, common_types=common_types, filters=filters, version=version)
 
-        _update_md5s(games=[game], keys=ALL_MD5_KEYS, bndb_dir=bndb_dir, json_dir=json_dir)
+        _update_md5s(games=[game], keys=all_md5_keys(version), bndb_dir=bndb_dir, json_dir=json_dir, version=version)
     emit_status("done")
 
 def export_all_common(bv, json_dir=JSON_DIR, force=False, emit_status=print):
@@ -135,9 +137,6 @@ def export_all_common(bv, json_dir=JSON_DIR, force=False, emit_status=print):
         os.makedirs(os.path.join(json_dir, COMMON_DIRNAME, key), exist_ok=True)
         func(*args)
 
-def export_symbols(bv, path, filters=DEFAULT_FILTERS):
-    return _export_symbols(bv, path, filters)
-
 class SymbolsToWrite:
     """ All exportable symbols from an exe in a format independent of JSON database version. """
     class Static(tp.NamedTuple):
@@ -164,9 +163,9 @@ class SymbolsToWrite:
         self.funcs = funcs
         self.cases = cases
 
-def _export_symbols(bv, path, filters: SymbolFilters):
+def _export_symbols(bv, path, version: JsonFormatVersion, filters: SymbolFilters):
     symbols = _get_exported_symbols(bv, filters)
-    _write_symbols_files_v2(bv, path, symbols)
+    _write_symbols_files(bv, path, symbols=symbols, version=version)
 
 def _get_exported_symbols(bv, filters: SymbolFilters):
     # precompute expensive properties
@@ -209,6 +208,12 @@ def _get_exported_symbols(bv, filters: SymbolFilters):
     for v in cases.values():
         v.sort(key=lambda x: x.address)
     return SymbolsToWrite(statics=statics, funcs=funcs, cases=cases)
+
+def _write_symbols_files(bv, path, version: JsonFormatVersion, symbols: SymbolsToWrite):
+    return {
+        1: lambda: _write_symbols_files_v1(bv, path, symbols),
+        2: lambda: _write_symbols_files_v2(bv, path, symbols),
+    }[version]()
 
 def _write_symbols_files_v2(bv, path, symbols: SymbolsToWrite):
     ttree_converter = TypeToTTreeConverter(bv)
@@ -254,8 +259,45 @@ def _write_symbols_files_v2(bv, path, symbols: SymbolsToWrite):
         json = {k: list(map(transform_case, v)) for (k, v) in symbols.cases.items()}
         nice_json(f, json, schema)
 
-def _export_types(bv, path, common_types: tp.Dict[str, TypeTree], filters: SymbolFilters):
+def _write_symbols_files_v1(bv, path, symbols: SymbolsToWrite):
+    def transform_static(data: SymbolsToWrite.Static):
+        return dict(
+            addr=hex(data.address),
+            name=data.name,
+            type=str(data.bn_type),
+            comment=data.comment,
+        )
+
+    def transform_func(data: SymbolsToWrite.Func):
+        return dict(
+            addr=hex(data.address),
+            name=data.name,
+            comment=data.comment,
+        )
+
+    def transform_case(data: SymbolsToWrite.Case):
+        return (hex(data.address), data.name)
+
+    schema: tp.Any  # mypy memes, in any better language the 'schema' vars would be block-scoped
+
+    with open_output_json_with_validation(os.path.join(path, 'statics.json')) as f:
+        schema = {'@type': 'block-array'}
+        nice_json(f, list(map(transform_static, symbols.statics)), schema)
+
+    with open_output_json_with_validation(os.path.join(path, 'funcs.json')) as f:
+        schema = {'@type': 'block-array'}
+        nice_json(f, list(map(transform_func, symbols.funcs)), schema)
+
+    with open_output_json_with_validation(os.path.join(path, 'labels.json')) as f:
+        schema = {'@type': 'block-mapping', '@line-sep': 1, 'element': {'@type': 'block-array'}}
+        json = {k: list(map(transform_case, v)) for (k, v) in symbols.cases.items()}
+        nice_json(f, json, schema)
+
+def _export_types(bv, path, common_types: tp.Dict[str, TypeTree], version: JsonFormatVersion, filters: SymbolFilters):
     """ Writes all type-related json files for a bv to a directory. """
+    if version != 2:
+        return  # FIXME
+
     our_types = {}
     ext_types = {}
     for k, v in bv.types.items():
@@ -322,7 +364,13 @@ def _export_types_from_dict(
             },
         })
 
-def _read_common_types(json_dir):
+def _read_common_types(json_dir, version: JsonFormatVersion):
+    return {
+        1: lambda: {},
+        2: lambda: _read_common_types_v2(json_dir),
+    }[version]()
+
+def _read_common_types_v2(json_dir):
     types = {}
     for path in glob.glob(os.path.join(json_dir, '_common', '*', 'types*.json')):
         types.update(json.load(open(path)))
@@ -335,21 +383,27 @@ def export_version_props(bv, path):
 
 # =================================================
 
-def import_all_functions(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, emit_status=print):
+def import_all_functions(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, version=1, emit_status=print):
     return _import_all_symbols(
-        games=games, bndb_dir=bndb_dir, json_dir=json_dir, emit_status=print,
+        games=games, bndb_dir=bndb_dir, json_dir=json_dir, version=version, emit_status=print,
         json_filename='funcs.json', symbol_type=bn.SymbolType.FunctionSymbol,
     )
 
-def import_all_statics(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, emit_status=print):
+def import_all_statics(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, version=1, emit_status=print):
     return _import_all_symbols(
-        games=games, bndb_dir=bndb_dir, json_dir=json_dir, emit_status=print,
+        games=games, bndb_dir=bndb_dir, json_dir=json_dir, version=version, emit_status=print,
         json_filename='statics.json', symbol_type=bn.SymbolType.DataSymbol,
     )
 
 # =================================================
 
-def _import_all_symbols(games, bndb_dir, json_dir, json_filename, symbol_type, emit_status):
+# NOTE: Old and not used in a while.
+#       The thought was that if people submit Pull Requests to th-re-data I should be able to merge them into
+#       my local databases with this function.  But only one person has ever done that, and instead normally
+#       I just manually add contributions by tossing a list into 'import_funcs_from_json' instead.
+def _import_all_symbols(games, bndb_dir, json_dir, json_filename, symbol_type, version, emit_status):
+    assert version == 1  # importing of version 2 not supported
+
     old_md5sums = _read_md5s_file(json_dir)
 
     for game in games:
@@ -362,7 +416,7 @@ def _import_all_symbols(games, bndb_dir, json_dir, json_filename, symbol_type, e
             emit_status(f'{game}: {e}')
             continue
 
-        if _compute_md5(json_path) == _lookup_md5(old_md5sums, game, json_filename):
+        if _compute_md5(json_path) == _lookup_md5(old_md5sums, game, json_filename, version=version):
             emit_status(f"{game}: up to date")
             continue
 
@@ -372,7 +426,7 @@ def _import_all_symbols(games, bndb_dir, json_dir, json_filename, symbol_type, e
                 emit_status(f'{game}: saving...')
                 bv.save_auto_snapshot()
 
-        _update_md5s(games=[game], keys=['bndb', json_filename], bndb_dir=bndb_dir, json_dir=json_dir)
+        _update_md5s(games=[game], keys=['bndb', json_filename], bndb_dir=bndb_dir, json_dir=json_dir, version=version)
     emit_status("done")
 
 def import_funcs_from_json(bv, funcs, emit_status=None):
@@ -401,101 +455,82 @@ def _import_symbols_from_json_v1(bv, symbols, symbol_type, emit_status=None):
                 emit_status(f'name {existing.name}')
     return changed
 
-def merge_function_files(games=GAMES, json_dir=JSON_DIR, emit_status=print):
-    return _merge_symbol_files(games, json_dir, 'funcs.json', emit_status)
-def merge_static_files(games=GAMES, json_dir=JSON_DIR, emit_status=print):
-    return _merge_symbol_files(games, json_dir, 'statics.json', emit_status)
-
-def _merge_symbol_files(games, json_dir, filename, emit_status):
-    _require_dir_exists(json_dir)
-    os.makedirs(os.path.join(json_dir, 'composite'), exist_ok=True)
-
-    composite_path = os.path.join(json_dir, 'composite', filename)
-    composite_items = []
-    for game in games:
-        with open(os.path.join(json_dir, f'{game}/{filename}')) as f:
-            game_items = json.load(f)
-        composite_items.extend(dict(game=game, **d) for d in game_items)
-
-    composite_items.sort(key=lambda d: d['name'])
-
-    with open(composite_path, 'w') as f:
-        nice_json(f, composite_items, {'@type': 'block-array'})
-
-def split_function_files(games=GAMES, json_dir=JSON_DIR, emit_status=print):
-    return _split_symbol_files(games, json_dir, 'funcs.json', emit_status)
-def split_static_files(games=GAMES, json_dir=JSON_DIR, emit_status=print):
-    return _split_symbol_files(games, json_dir, 'statics.json', emit_status)
-
-def _split_symbol_files(games, json_dir, filename, emit_status):
-    _require_dir_exists(json_dir)
-
-    with open(os.path.join(json_dir, 'composite', filename)) as f:
-        composite_items = json.load(f)
-    for game in games:
-        game_items = [dict(d) for d in composite_items if d['game'] == game]
-        for d in game_items:
-            del d['game']
-        game_items.sort(key=lambda d: d['addr'])
-        with open(os.path.join(json_dir, f'{game}/{filename}'), 'w') as f:
-            nice_json(f, game_items, {'@type': 'block-array'})
-
-def nice_json(file, value, schema, indent=0):
-    if schema is None:
-        schema = {'@type': 'inline'}
-
-    if schema['@type'] == 'inline':
-        json.dump(value, file)
-
-    elif schema['@type'] == 'block-array':
-        # Homogenous list
-        assert isinstance(value, (list, tuple)), (value, schema)
-        def do_item(item):
-            nice_json(file, item, schema.get('element', None), indent + 2)
-        _nice_json_block(file, '[', ']', indent, schema.get('@line-sep', 0), list(value), do_item)
-
-    elif schema['@type'] == 'block-object':
-        # Heterogenous dict
-        assert isinstance(value, dict), (value, schema)
-        def do_key(key):
-            print(json.dumps(key) + ': ', end='', file=file)
-            nice_json(file, value[key], schema.get(key, None), indent + 2)
-        _nice_json_block(file, '{', '}', indent, schema.get('@line-sep', 0), list(value), do_key)
-
-    elif schema['@type'] == 'block-mapping':
-        # Homogenous dict
-        assert isinstance(value, dict), (value, schema)
-        def do_key(key):
-            print(json.dumps(key) + ': ', end='', file=file)
-            nice_json(file, value[key], schema.get('element', None), indent + 2)
-        _nice_json_block(file, '{', '}', indent, schema.get('@line-sep', 0), list(value), do_key)
-
-    elif schema['@type'] == 'object-variant':
-        assert isinstance(value, dict), (value, schema)
-        tag = schema['@tag']
-        variant_name = value[tag]
-        sub_schema = schema.get(variant_name)
-        if not sub_schema:
-            sub_schema = schema['@default']
-        nice_json(file, value, schema[variant_name], indent)
-
-    else:
-        assert False, schema
-
-def _nice_json_block(file, open: str, close: str, indent: int, line_sep: int, items: tp.List, do_item: tp.Callable):
-    if not items:
-        print(' ' * indent + f'{open}{close}', end='', file=file)
-        return
-    first = True
-    for item in items:
+def nice_json(file, value, schema, final_newline=True, starting_indent=0, indent=2):
+    """
+    A recursive json formatter which uses a schema to allow the caller to specify which
+    things should be formatted block-style versus inline.
+    """
+    _NiceJsonContext(file=file, indent_step=indent).format_value(value=value, schema=schema, indent=starting_indent)
+    if final_newline:
         print(file=file)
-        print(' ' * indent + (f'{open} ' if first else ', '), end='', file=file)
-        first = False
-        do_item(item)
-        print('\n' * line_sep, end='', file=file)
-    print('\n' + ' ' * indent + close, end='', file=file)
+
+class _NiceJsonContext:
+    def __init__(self, file, indent_step):
+        self.file = file
+        self.indent_step = indent_step
+
+    def format_value(self, value, schema, indent):
+        if schema is None:
+            schema = {'@type': 'inline'}
+
+        if schema['@type'] == 'inline':
+            json.dump(value, self.file)
+
+        elif schema['@type'] == 'block-array':
+            # Homogenous list
+            assert isinstance(value, (list, tuple)), (value, schema)
+            def do_item(item):
+                self.format_value(item, schema.get('element', None), indent + self.indent_step)
+            self.format_block('[', ']', indent, schema.get('@line-sep', 0), list(value), do_item)
+
+        elif schema['@type'] == 'block-object':
+            # Heterogenous dict
+            assert isinstance(value, dict), (value, schema)
+            def do_key(key):
+                print(json.dumps(key) + ': ', end='', file=self.file)
+                self.format_value(value[key], schema.get(key, None), indent + self.indent_step)
+            self.format_block('{', '}', indent, schema.get('@line-sep', 0), list(value), do_key)
+
+        elif schema['@type'] == 'block-mapping':
+            # Homogenous dict
+            assert isinstance(value, dict), (value, schema)
+            def do_key(key):
+                print(json.dumps(key) + ': ', end='', file=self.file)
+                self.format_value(value[key], schema.get('element', None), indent + self.indent_step)
+            self.format_block('{', '}', indent, schema.get('@line-sep', 0), list(value), do_key)
+
+        elif schema['@type'] == 'object-variant':
+            assert isinstance(value, dict), (value, schema)
+            tag = schema['@tag']
+            variant_name = value[tag]
+            sub_schema = schema.get(variant_name)
+            if not sub_schema:
+                sub_schema = schema['@default']
+            self.format_value(value, schema[variant_name], indent=indent)
+
+        else:
+            assert False, schema
+
+    def format_block(self, open: str, close: str, indent: int, line_sep: int, items: tp.List, do_item: tp.Callable):
+        if not items:
+            print(' ' * indent + f'{open}{close}', end='', file=self.file)
+            return
+        first = True
+        for item in items:
+            print(file=self.file)
+            print(' ' * indent + (f'{open} ' if first else ', '), end='', file=self.file)
+            first = False
+            do_item(item)
+            print('\n' * line_sep, end='', file=self.file)
+        print('\n' + ' ' * indent + close, end='', file=self.file)
 
 #============================================================================
+
+def all_md5_keys(version: JsonFormatVersion):
+    return {
+        1: ['bndb', 'funcs.json', 'labels.json', 'statics.json', 'type-structs-own.json'],
+        2: ['bndb', 'funcs.json', 'labels.json', 'statics.json', 'types-own.json'],
+    }[version]
 
 def _read_md5s_file(json_dir=JSON_DIR):
     md5sum_path = os.path.join(json_dir, MD5SUMS_FILENAME)
@@ -505,17 +540,18 @@ def _read_md5s_file(json_dir=JSON_DIR):
     except IOError: return {}
     except json.decoder.JSONDecodeError: return {}
 
-def _update_md5s(games, keys, bndb_dir, json_dir):
+def _update_md5s(games, keys, bndb_dir, json_dir, version: JsonFormatVersion):
     md5s = _read_md5s_file(json_dir)
 
     path_funcs = {
+        # files not in json_dir
         'bndb': (lambda game: os.path.join(bndb_dir, f'{game}.bndb')),
-        'funcs.json': (lambda game: os.path.join(json_dir, game, 'funcs.json')),
-        'labels.json': (lambda game: os.path.join(json_dir, game, 'labels.json')),
-        'statics.json': (lambda game: os.path.join(json_dir, game, 'statics.json')),
-        'types-own.json': (lambda game: os.path.join(json_dir, game, 'types-own.json')),
     }
-    assert set(path_funcs) == set(ALL_MD5_KEYS)
+    for filename in all_md5_keys(version):
+        if filename not in path_funcs:
+            path_funcs[filename] = lambda game: os.path.join(json_dir, game, filename)
+
+    assert set(path_funcs) == set(all_md5_keys(version))
     for game in games:
         if game not in md5s:
             md5s[game] = {}
@@ -525,13 +561,13 @@ def _update_md5s(games, keys, bndb_dir, json_dir):
     with open(os.path.join(json_dir, MD5SUMS_FILENAME), 'w') as f:
         nice_json(f, md5s, {'@type': 'block-mapping'})
 
-def _lookup_md5(md5s_dict, game, key):
-    assert key in ALL_MD5_KEYS # protection against typos
+def _lookup_md5(md5s_dict, game, key, version: JsonFormatVersion):
+    assert key in all_md5_keys(version) # protection against typos
     print(game, key)
     return md5s_dict.get(game, {}).get(key, None)
 
 @contextlib.contextmanager
-def open_output_json_with_validation(path):
+def open_output_json_with_validation(path: PathLike):
     """ Open a file for writing json.  Once the 'with' block is exited, the file will be
     reopened for reading to validate the JSON. """
     with open(path, 'w') as f:
@@ -542,20 +578,21 @@ def open_output_json_with_validation(path):
 
 #============================================================================
 
-def _require_dir_exists(path):
-    if not os.path.exists(path):
+def _require_dir_exists(path: PathLike):
+    if not Path(path).exists:
         raise IOError(f"{path}: No such directory")
 
 #============================================================================
-
+Path('a').iterdir
 # Check if any of the given named tpyes have inconsistent definitions
 # between all of the version types files
 def check_all_structs(names, root_name=None):
     ds = {}
-    for k in os.listdir(os.path.join(JSON_DIR)):
-        fpath = os.path.join(JSON_DIR, k, 'types-ext.json')
-        if os.path.exists(fpath):
-            ds[k] = json.load(open(fpath))
+    for child in Path(JSON_DIR).iterdir():
+        fpath = child / 'types-ext.json'
+        if fpath.exists:
+            version = child.name
+            ds[version] = json.load(open(fpath))
 
     versions = list(ds)
     if root_name:
@@ -579,13 +616,13 @@ def all_game_bvs(games=GAMES):
     bvs = []
     for game in games:
         print(game)
-        bndb_path = os.path.join(BNDB_DIR, f'{game}.bndb')
+        bndb_path = Path(BNDB_DIR) / f'{game}.bndb'
         bvs.append(open_bv(bndb_path, update_analysis=False))
     return bvs
 
 #============================================================================
 
-def make_c_header_zip(bvs, games, outpath=os.path.join(JSON_DIR, 'th-re-c-defs.zip')):
+def make_c_header_zip(bvs, games, outpath: PathLike = Path(JSON_DIR) / 'th-re-c-defs.zip'):
     from .export_to_c import make_c_header_zip as impl
     impl(bvs, games, outpath)
 

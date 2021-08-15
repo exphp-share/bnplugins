@@ -1,9 +1,11 @@
+import os
 import typing as tp
 
 import binaryninja as bn
 
 TAG_KEYWORD = 'is'
 TypeTree = tp.Dict
+PathLike = tp.Union[str, os.PathLike]
 
 def lookup_named_type_definition(bv, name: bn.QualifiedName) -> tp.Tuple[str, tp.Optional[bn.Type]]:
     """

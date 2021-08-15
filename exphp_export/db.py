@@ -51,7 +51,7 @@ class BinaryViewChanger:
     the change does not appear applicable to this BinaryView, and they will raise an
     exception in cases that require human intervention.
     """
-    def __init__(self, bv):
+    def __init__(self, bv: bn.BinaryView):
         self.bv = bv
 
     def _has_type(self, name):
