@@ -583,7 +583,7 @@ def _require_dir_exists(path: PathLike):
         raise IOError(f"{path}: No such directory")
 
 #============================================================================
-Path('a').iterdir
+
 # Check if any of the given named tpyes have inconsistent definitions
 # between all of the version types files
 def check_all_structs(names, root_name=None):
@@ -625,6 +625,34 @@ def all_game_bvs(games=GAMES):
 def make_c_header_zip(bvs, games, outpath: PathLike = Path(JSON_DIR) / 'th-re-c-defs.zip'):
     from .export_to_c import make_c_header_zip as impl
     impl(bvs, games, outpath)
+
+#============================================================================
+# things used at least once in the past to perform mass changes to my db to fix consistency/integrity errors and etc.
+#
+# some of these are pretty specific to my DB.  They're only here in __init__ because I use them
+# directly from the repl.
+
+def fix_label_names(bvs: tp.List[bn.BinaryView]):
+    """ Add missing '__case_' infixes to special case labels. (hack for personal use) """
+    for bv in bvs:
+        print(bv)
+        # gather all label groups
+        symbols = [v[0] for v in bv.symbols.values() if v[0].type == bn.SymbolType.DataSymbol]
+        group_prefixes = set()
+        is_valid_case_name = lambda name: '__case_' in name or '__cases_' in name
+        for symbol in symbols:
+            name = str(symbol.name)  # in case of QualifiedName
+            if is_valid_case_name(name):
+                group_prefixes.add(name[:name.index('__case')])
+
+        for symbol in symbols:
+            name = str(symbol.name)  # in case of QualifiedName
+            if is_valid_case_name(name):
+                continue
+            parts = name.split('__', 1)
+            if len(parts) > 1 and parts[0] in group_prefixes:
+                new_name = parts[0] + '__case_' + parts[1]
+                bv.define_user_symbol(bn.Symbol(bn.SymbolType.DataSymbol, symbol.address, new_name))
 
 # def fix_vtable_names(bvs, names_to_consider):
 #     for bv in bvs:
