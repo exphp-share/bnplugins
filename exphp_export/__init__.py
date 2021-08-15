@@ -77,7 +77,7 @@ def export_all(
         bndb_dir: PathLike = BNDB_DIR,
         json_dir: PathLike = JSON_DIR,
         force: bool = False,
-        version: JsonFormatVersion = 1,
+        version: JsonFormatVersion = 2,
         emit_status: tp.Callable = print,
         update_analysis: bool = False,
         filters: SymbolFilters = DEFAULT_FILTERS,
@@ -105,7 +105,7 @@ def export_all(
         _update_md5s(games=[game], keys=all_md5_keys(version), bndb_dir=bndb_dir, json_dir=json_dir, version=version)
     emit_status("done")
 
-def export_all_common(bv, json_dir=JSON_DIR, force=False, emit_status=print):
+def export_all_common(bv, json_dir=JSON_DIR, force=False, emit_status=print, filters=DEFAULT_FILTERS):
     """ Update the json files in the _common directory, acquiring types from the given BV. """
     _require_dir_exists(os.path.dirname(json_dir))
     os.makedirs(os.path.join(json_dir, COMMON_DIRNAME), exist_ok=True)
@@ -119,11 +119,11 @@ def export_all_common(bv, json_dir=JSON_DIR, force=False, emit_status=print):
         if not type_library.named_types:
             continue  # empty, don't bother
         dirname = type_library.name.rsplit('.', 1)[0]
-        things_to_update[dirname] = (_export_types_from_type_library, bv, get_types_path(dirname), type_library)
+        # the outer closure (an IIFE) is to create a permanent binding to the current value of 'type_library';
+        # otherwise, all closures would be for the last type library in the BV
+        things_to_update[dirname] = (lambda lib: lambda: _export_types_from_type_library(bv, get_types_path(dirname), lib, filters))(type_library)
 
-    things_to_update['pe'] = (_export_pe_types, bv, get_types_path('pe'))
-
-    things_to_update[bv.platform.name] = (_export_types_from_dict, bv, get_types_path(bv.platform.name), bv.platform.types, {})
+    things_to_update[bv.platform.name] = lambda: _export_types_from_dict(bv, get_types_path(bv.platform.name), bv.platform.types, {}, filters)
 
     names_unable_to_update = [name for name in invalidated_dirs if name not in things_to_update]
     if names_unable_to_update:
@@ -132,10 +132,10 @@ def export_all_common(bv, json_dir=JSON_DIR, force=False, emit_status=print):
         if not force:
             raise RuntimeError(err_msg)
 
-    for key, (func, *args) in things_to_update.items():
+    for key, func in things_to_update.items():
         print(get_types_path(key))
         os.makedirs(os.path.join(json_dir, COMMON_DIRNAME, key), exist_ok=True)
-        func(*args)
+        func()
 
 class SymbolsToWrite:
     """ All exportable symbols from an exe in a format independent of JSON database version. """
@@ -310,25 +310,32 @@ def _export_types(bv, path, common_types: tp.Dict[str, TypeTree], version: JsonF
     _export_types_from_dict(bv, os.path.join(path, 'types-own.json'), our_types, common_types, filters)
     _export_types_from_dict(bv, os.path.join(path, 'types-ext.json'), ext_types, common_types, filters)
 
-def _export_types_from_type_library(bv, path, type_library: bn.TypeLibrary, filters: SymbolFilters):
+def _export_types_from_type_library(bv, path, type_library: bn.TypeLibrary,filters: SymbolFilters):
     """ Write a single file like ``types-own.json`` containing all types from a type library. """
-    # Totally ignore the input bv and create one with no other type libraries to avoid competition
+    # Here's the annoying thing:
+    #  - BinaryView is a central part of our type serialization
+    #  - A BinaryView will only lazily load types from a type library as they are needed
+    #    through certain API functions.
+    #  - We want to export all of the types in the library, since we can't tell ahead of time
+    #    which types are used by OTHER games.
+
+    # We don't just want to tell the current BV to load all the types from the library because this
+    # will have the effect of making all of the types permanently appear in the GUI's type list.
+    #
+    # So we make a new BV.
+    original_bv = bv
     bv = bn.BinaryView()
+
+    # TypeLibraries do not include platform types.
+    # Luckily, bv.platform appears to settable.
+    bv.platform = original_bv.platform
+
+    # Import the types from the type library
     bv.add_type_library(type_library)
-    # trick the bv into actually loading all of the types
     for name in type_library.named_types:
-        bv.parse_type_string(str(name))  # the bv will automatically load type library types while parsing
+        bv.import_library_type(name)
 
-    types_to_export = {}
-    for name in type_library.named_types:
-        types_to_export[name] = bv.get_type_by_name(name)
-
-    _export_types_from_dict(bv, path, types_to_export, common_types={}, filters=filters)
-
-def _export_pe_types(bv, path, filters: SymbolFilters):
-    """ Write a single file like ``types-own.json`` containing the PE header types. """
-    types = {k: v for (k, v) in bv.types.items() if bv.get_type_id(k).startswith('pe:')}
-    _export_types_from_dict(bv, path, types, common_types={}, filters=filters)
+    _export_types_from_dict(bv, path, type_library.named_types, common_types={}, filters=filters)
 
 def _export_types_from_dict(
         bv: bn.BinaryView,

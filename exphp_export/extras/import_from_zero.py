@@ -99,6 +99,8 @@ def _filter_user_symbols(bv: BinaryView, symbols: tp.List['CsvUserSymbol']):
         effective_name = effective_name.strip()
         effective_name = _strip_function_signature(effective_name)
         effective_name = _convert_label_case_name(effective_name)
+        kind = bn.SymbolType.FunctionSymbol if symbol_address_is_function(bv, symbol.address) else bn.SymbolType.DataSymbol
+
         out.symbols.append(bn.Symbol(bn.SymbolType.FunctionSymbol, symbol.address, effective_name))
 
     assert out.total_count() == len(symbols)
@@ -146,8 +148,11 @@ def _filter_system_symbols(bv: BinaryView, symbols: tp.List['CsvSystemSymbol']):
             out.ignored.append((IgnoreReason.Nonsense, symbol))
             continue
 
-        kind = bn.SymbolType.FunctionSymbol if symbol_address_is_function(bv, symbol.address) else bn.SymbolType.DataSymbol
-        out.symbols.append(bn.Symbol(kind, symbol.address, symbol.name))
+        if not symbol_address_is_function(bv, symbol.address):
+            out.ignored.append((IgnoreReason.Nonsense, symbol))
+            continue
+
+        out.symbols.append(bn.Symbol(bv.SymbolType.FunctionSymbol, symbol.address, symbol.name))
 
     assert out.total_count() == len(symbols)
     return out
