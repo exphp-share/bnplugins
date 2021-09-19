@@ -116,7 +116,7 @@ def _structure_fields(
             continue # no gaps for unions
 
         # A gap may follow, but in a non-packed struct it may be identifiable as padding
-        assert field.type  # in effective_members, only the end marker has None type
+        assert field.type is not None  # in effective_members, only the end marker has None type
         gap_start = field.offset + field.type.width
         gap_name = GAP_MEMBER_NAME
         if not structure.packed:

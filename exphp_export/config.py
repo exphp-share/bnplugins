@@ -1,5 +1,6 @@
 
 import abc
+import enum
 import typing as tp
 import binaryninja as bn
 
@@ -37,6 +38,15 @@ class SymbolFilters(abc.ABC):
 
         Case labels take priority over data symbols. """
         raise NotImplementedError
+
+    @abc.abstractmethod
+    def classify_type_origin(self, name: str) -> 'TypeOrigin':
+        """ Determine if a type is from the game or from libraries. """
+        raise NotImplementedError
+
+class TypeOrigin(enum.Enum):
+    OURS = enum.auto()
+    EXTERNAL = enum.auto()
 
 # =============================================================================
 # Impl for my own DB
@@ -99,6 +109,9 @@ class ExphpSymbolFilters(SymbolFilters):
                 table_name, rest = name.split(infix)
                 return SymbolFilters.CaseLabel(table_name=table_name, case=rest)
 
+    def classify_type_origin(self, name: str) -> TypeOrigin:
+        return TypeOrigin.OURS if name.startswith('z') else TypeOrigin.EXTERNAL
+
 class SimpleFilters(SymbolFilters):
     """ A simple set of filters that keeps all functions, statics and fields. """
     def as_useful_func_symbol(self, name):
@@ -112,6 +125,9 @@ class SimpleFilters(SymbolFilters):
 
     def as_case_label(self, name):
         return None
+
+    def classify_type_origin(self, name):
+        return TypeOrigin.OURS
 
 DEFAULT_FILTERS = ExphpSymbolFilters()
 

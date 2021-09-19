@@ -16,9 +16,9 @@ from binaryninja import log
 import binaryninja as bn
 from pathlib import Path
 
-from .common import TypeTree, TAG_KEYWORD, PathLike
-from .config import SymbolFilters, DEFAULT_FILTERS
-from .export_types import _create_types_file_json, TypeToTTreeConverter
+from .common import TypeTree, TAG_KEYWORD, PathLike, lookup_named_type_definition
+from .config import SymbolFilters, DEFAULT_FILTERS, TypeOrigin
+from .export_types import _create_types_file_json, TypeToTTreeConverter, _structure_fields
 
 from .export_types import create_types_file_json  # re-export
 from .test import run_tests  # re-export
@@ -50,10 +50,15 @@ GAMES = [
 ]
 JsonFormatVersion = int  # tp.Literal[1, 2]  # needs python 3.8
 
+K = tp.TypeVar('K')
+V = tp.TypeVar('V')
+G = tp.TypeVar('G')
+
 def export(bv, path, common_types={}, version=2, filters=DEFAULT_FILTERS):
     return _export(bv, path, common_types, version, filters)
 
 def _export(bv: bn.BinaryView, path: PathLike, common_types, version: JsonFormatVersion, filters: SymbolFilters):
+    path = Path(path)
     _export_symbols(bv, path=path, filters=filters, version=version)
     _export_types(bv, path=path, common_types=common_types, filters=filters, version=version)
 
@@ -293,24 +298,24 @@ def _write_symbols_files_v1(bv, path, symbols: SymbolsToWrite):
         json = {k: list(map(transform_case, v)) for (k, v) in symbols.cases.items()}
         nice_json(f, json, schema)
 
-def _export_types(bv, path, common_types: tp.Dict[str, TypeTree], version: JsonFormatVersion, filters: SymbolFilters):
+def _export_types(bv, path: Path, common_types: tp.Dict[str, TypeTree], version: JsonFormatVersion, filters: SymbolFilters):
     """ Writes all type-related json files for a bv to a directory. """
-    if version != 2:
-        return  # FIXME
+    if version == 1:
+        return _export_types_v1(bv, path, filters)
+    elif version == 2:
+        return _export_types_v2(bv, path, common_types, filters)
+    else:
+        assert False, version
 
-    our_types = {}
-    ext_types = {}
-    for k, v in bv.types.items():
-        if str(k).startswith('z'):
-            our_types[k] = v
-        else:
-            ext_types[k] = v
+def _export_types_v2(bv: bn.BinaryView, path: Path, common_types: tp.Dict[str, TypeTree], filters: SymbolFilters):
+    """ Writes all type-related json files for a bv to a directory. """
+    types_by_origin = split_dict(bv.types, lambda name, ty: filters.classify_type_origin(name))
 
     export_version_props(bv, path)
-    _export_types_from_dict(bv, os.path.join(path, 'types-own.json'), our_types, common_types, filters)
-    _export_types_from_dict(bv, os.path.join(path, 'types-ext.json'), ext_types, common_types, filters)
+    _export_types_from_dict(bv, path / 'types-own.json', types_by_origin[TypeOrigin.OURS], common_types, filters)
+    _export_types_from_dict(bv, path / 'types-ext.json', types_by_origin[TypeOrigin.EXTERNAL], common_types, filters)
 
-def _export_types_from_type_library(bv, path, type_library: bn.TypeLibrary,filters: SymbolFilters):
+def _export_types_from_type_library(bv, path, type_library: bn.TypeLibrary, filters: SymbolFilters):
     """ Write a single file like ``types-own.json`` containing all types from a type library. """
     # Here's the annoying thing:
     #  - BinaryView is a central part of our type serialization
@@ -339,7 +344,7 @@ def _export_types_from_type_library(bv, path, type_library: bn.TypeLibrary,filte
 
 def _export_types_from_dict(
         bv: bn.BinaryView,
-        path: str,
+        path: Path,
         types_to_export: tp.Mapping[bn.QualifiedName, bn.Type],
         common_types: tp.Dict[str, TypeTree],
         filters: SymbolFilters,
@@ -383,10 +388,92 @@ def _read_common_types_v2(json_dir):
         types.update(json.load(open(path)))
     return types
 
-def export_version_props(bv, path):
+def export_version_props(bv: bn.BinaryView, path):
     props = {'pointer-size': bv.arch.address_size}
     with open_output_json_with_validation(os.path.join(path, 'version-props.json')) as f:
         nice_json(f, props, {'@type': 'block-object'})
+
+def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
+    enums = {}
+    unions = {}
+    structs = {}
+    typedefs = {}
+    for type_name, ty in bv.types.items():
+        type_name = str(type_name)
+
+        classification, extra_payload = lookup_named_type_definition(bv, type_name)
+        if classification == 'struct':
+            structs[type_name] = structure_to_cereal_v1(ty.structure, filters, _name_for_debug=type_name)
+        elif classification == 'union':
+            unions[type_name] = union_to_cereal_v1(ty.structure, _name_for_debug=type_name)
+        elif classification == 'enum':
+            enums[type_name] = enum_to_cereal_v1(ty.enumeration)
+        elif classification == 'typedef':
+            typedef_target = extra_payload
+            typedefs[type_name] = {'def': str(typedef_target), 'size': typedef_target.width}
+
+    structs_by_origin = split_dict(structs, lambda name, ty: filters.classify_type_origin(str(name)))
+
+    with open_output_json_with_validation(path / 'type-enums.json') as f:
+        nice_json(f, enums, {
+            '@type': 'block-mapping',
+            '@line-sep': 1,
+            'element': {'@type': 'block-array'},
+        })
+
+    with open_output_json_with_validation(path / 'type-unions.json') as f:
+        nice_json(f, unions, {
+            '@type': 'block-mapping',
+            '@line-sep': 1,
+            'element': {'@type': 'block-array'},
+        })
+
+    with open_output_json_with_validation(path / 'type-aliases.json') as f:
+        nice_json(f, typedefs, {
+            '@type': 'block-mapping',
+            '@line-sep': 0,
+        })
+
+    struct_schema = {
+        '@type': 'block-mapping',
+        '@line-sep': 1,
+        'element': {'@type': 'block-array'},
+    }
+    for origin, fname in [
+        (TypeOrigin.OURS, 'type-structs-own.json'),
+        (TypeOrigin.EXTERNAL, 'type-structs-ext.json'),
+    ]:
+        if origin in structs_by_origin:
+            with open_output_json_with_validation(path / fname) as f:
+                nice_json(f, structs_by_origin[origin], struct_schema)
+
+
+def structure_to_cereal_v1(structure: bn.Structure, filters: SymbolFilters, _name_for_debug=None):
+    assert not structure.union
+
+    keep = lambda name, ty: filters.is_useful_struct_member(name, ty)
+    ignore = lambda name, ty: not keep(name, ty)
+    fields = _structure_fields(structure, ignore, _name_for_debug=_name_for_debug)
+
+    return [(hex(m.offset), m.name, str(m.type) if m.type is not None else None) for m in fields]
+
+def union_to_cereal_v1(structure: bn.Structure, _name_for_debug=None):
+    assert structure.union
+    fields = _structure_fields(structure, ignore=lambda *args,**kw: False, _name_for_debug=_name_for_debug)
+
+    return [(m.name, str(m.type) if m.type is not None else None) for m in fields]
+
+def enum_to_cereal_v1(enumeration: bn.Enumeration):
+    return [(m.name, m.value) for m in enumeration.members]
+
+def split_dict(input: tp.Dict[K, V], key: tp.Callable[[K, V], G], use_defaultdict=False) -> tp.Mapping[G, tp.Dict[K, V]]:
+    """ Turn a dict into a nested dict that groups the original entries according to a key function. """
+    out = defaultdict(dict)
+    for k, v in input.items():
+        group_key = key(k, v)
+        out[group_key][k] = v
+
+    return out if use_defaultdict else dict(out)
 
 # =================================================
 
