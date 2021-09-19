@@ -3,13 +3,23 @@ import struct
 import os
 from binaryninja import log
 import binaryninja as bn
+import threading
+import typing as tp
 
 # ========================================================================
 
-_RECORDING_UNDO = False
+class UndoRecorder:
+    def __init__(self): self.active = False
+    def enable_auto_rollback(self): self.active = True
+
+class _RecordingUndoState(tp.NamedTuple):
+    rec: UndoRecorder
+    thread_ident: int
+
+_RECORDING_UNDO: tp.Optional[_RecordingUndoState] = None
 
 @contextlib.contextmanager
-def recording_undo(bv):
+def recording_undo(bv: bn.BinaryView):
     """ Context manager for ``bv.begin_undo_actions()``.  The contents of the ``with`` block
     will become a single undo-able action. (assuming at least one change was made inside)
 
@@ -17,8 +27,8 @@ def recording_undo(bv):
     for this to occur, you must call ``.enable_auto_rollback()`` on the returned object at least
     once after performing at least one successful modification to the ``BinaryView``.
 
-    This context manager is not reentrant.  Do not use it recursively, or from multiple threads.
-    (obviously, you also should not use BinaryNinja's own undo API while using it!)
+    This context manager can be used recursively, but is not reentrant across multiple threads
+    (it will detect this and throw an exception).
 
     >>> def rename_type_in_funcs(bv, old, new):
     ...     old_prefix = f'{old}::'
@@ -34,15 +44,24 @@ def recording_undo(bv):
     global _RECORDING_UNDO
 
     if _RECORDING_UNDO:
-        raise RuntimeError(f'Attempted to use `recording_undo` recursively!')
+        if _RECORDING_UNDO.thread_ident != threading.get_ident():
+            # We can't possibly be re-entrant across multiple threads; how would you
+            # define partially overlapping undo actions?!
+            raise RuntimeError(f'Attempted to use `recording_undo` from multiple threads!')
 
-    class UndoRecorder:
-        def __init__(self): self.active = False
-        def enable_auto_rollback(self): self.active = True
+        # Recursive call.  Just produce the existing 'rec' and do not use the API.
+        #
+        # This way, only the outermost call results in an undoable change.
+        rec = _RECORDING_UNDO.rec
+        try:
+            yield rec
+        finally:
+            if _RECORDING_UNDO.rec is not rec:
+                log.log_warn('nested `recording_undo`s appear to have been closed out of order')
 
     rec = UndoRecorder()
 
-    _RECORDING_UNDO = True
+    _RECORDING_UNDO = _RecordingUndoState(rec=rec, thread_ident=threading.get_ident())
     bv.begin_undo_actions()
     try:
         yield rec
@@ -54,7 +73,7 @@ def recording_undo(bv):
             bv.undo()
         raise
     finally:
-        _RECORDING_UNDO = False
+        _RECORDING_UNDO = None
 
     bv.commit_undo_actions()
 
@@ -122,12 +141,14 @@ def open_th_bv(bv, source, update_analysis=False, **kw):
     """ Open a touhou bndb.  Another touhou bv is used to get a search directory.
 
     This is a context manager. (usable in `with`) """
-    if 'v' not in source.lower():
-        source += '.' + GAME_VERSIONS[source]
+
+    if os.sep not in source and '/' not in source:
+        if source.startswith('th') and 'v' not in source:
+            source += '.' + GAME_VERSIONS[source]
+        source = os.path.join(os.path.dirname(bv.file.filename), source)
+
     if not source.lower().endswith('.bndb'):
         source += '.bndb'
-    if os.sep not in source and '/' not in source:
-        source = os.path.join(os.path.dirname(bv.file.filename), source)
 
     return bn.BinaryViewType.get_view_of_file(source, update_analysis=update_analysis, **kw)
 
