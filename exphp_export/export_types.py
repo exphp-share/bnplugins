@@ -79,48 +79,59 @@ GAP_MEMBER_NAME = '__unknown'
 PADDING_MEMBER_NAME = '__padding'
 END_MEMBER_NAME = '__end'
 
+class StructureField(tp.NamedTuple):
+    offset: int
+    name: str
+    # This is None for things like the end marker and padding.
+    # Parsing scripts can look at `name` to distinguish between the various special cases.
+    type: tp.Optional[bn.Type]
+
 def _structure_fields(
-        structure,
+        structure: bn.Structure,
         ignore,  # field-ignoring predicate
         _name_for_debug=None,  # struct name, used only for diagnostic purposes
 ):
     if ignore is None:
         ignore = lambda name, ty: False
 
-    # Include a fake field at the max offset to help simplify things
-    effective_members = [(x.offset, x.name, x.type) for x in structure.members]
-    effective_members.append((structure.width, None, None))
+    end_marker = StructureField(offset=structure.width, name=END_MEMBER_NAME, type=None)
 
-    effective_members = [(off, name, ty) for (off, name, ty) in effective_members if not ignore(name, ty)]
+    # Ignore some fields.
+    # A fake field at the max offset which helps simplify some things
+    effective_members = [StructureField(offset=x.offset, name=x.name, type=x.type) for x in structure.members]
+    effective_members = [m for m in effective_members if not ignore(m.name, m.type)]
+    effective_members.append(end_marker)
 
     if not structure.packed and structure.width % structure.alignment != 0:
         # binary ninja allows width to not be a multiple of align, which makes arrays UB
         log.log_error(f'unpacked structure {_name_for_debug or ""} has width {structure.width} but align {structure.alignment}')
 
     # Edge case: First thing not at offset zero (or no members)
-    if effective_members[0][0] != 0:
-        yield {'offset': 0, 'name': GAP_MEMBER_NAME, 'type': None}
+    if effective_members[0].offset != 0:
+        yield StructureField(offset=0, name=GAP_MEMBER_NAME, type=None)
 
-    for (offset, name, ty), (next_offset, _, next_ty) in window2(effective_members):
-        yield {'offset': offset, 'name': name, 'type': ty}
+    for field, next_field in window2(effective_members):
+        yield field
         if structure.union:
             continue # no gaps for unions
 
         # A gap may follow, but in a non-packed struct it may be identifiable as padding
-        gap_start = offset + ty.width
+        assert field.type  # in effective_members, only the end marker has None type
+        gap_start = field.offset + field.type.width
         gap_name = GAP_MEMBER_NAME
         if not structure.packed:
             # note: next_ty is None at end of struct, which has alignment of the entire structure so that arrays can work
-            alignment = next_ty.alignment if next_ty else structure.alignment
+            alignment = next_field.type.alignment if next_field.type else structure.alignment
             padding_end = gap_start + (0 if gap_start % alignment == 0 else alignment - (gap_start % alignment))
-            if next_offset == padding_end:
+            if next_field.offset == padding_end:
                 gap_name = PADDING_MEMBER_NAME
 
-        if next_offset != gap_start:
-            yield {'offset': offset + ty.width, 'name': gap_name, 'type': None}
+        if next_field.offset != gap_start:
+            yield StructureField(offset=field.offset + field.type.width, name=gap_name, type=None)
 
     if not structure.union:
-        yield {'offset': structure.width, 'name': END_MEMBER_NAME, 'type': None}
+        # Also put an end marker in the output because it's useful to downstream code
+        yield end_marker
 
 TTREE_VALID_ABBREV_REGEX = re.compile(r'^[_\$#:a-zA-Z][_\$#:a-zA-Z0-9]*$')
 
@@ -253,3 +264,15 @@ def _further_abbreviate_flattened_ttree(ttree):
 # Turn a list ttree into a nested object. (destructively)
 def _possibly_nest_flattened_ttree(ttree):
     return ttree  # don't implement for now
+
+# # ==============================================================================
+# # V1 types
+
+# def structure_to_cereal_v1(structure: bn.Structure, filters: SymbolFilters, _name_for_debug=None):
+#     assert not structure.union
+
+#     keep = lambda name, ty: filters.is_useful_struct_member(name, ty)
+#     ignore = lambda name, ty: not keep(name, ty)
+#     fields = _structure_fields(structure, ignore, _name_for_debug=_name_for_debug)
+
+#     return [(hex(member.offset), member.name)]

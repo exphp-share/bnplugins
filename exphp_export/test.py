@@ -60,12 +60,14 @@ def assert_equal(actual, expected):
         print('expected: ', expected)
         assert False
 
-def assert_dict_subset(actual, expected):
+def assert_attrs_eq(actual, expected):
     for k in expected:
         try:
-            if k not in actual or actual[k] != expected[k]:
+            if not hasattr(actual, k) or getattr(actual, k) != expected[k]:
                 print('  actual: ', actual)
                 print('expected: ', expected)
+                print(' bad key: ', k)
+                print(' hasattr: ', hasattr(actual, k))
                 assert False, 'not a subset of expected'
         except:
             raise ValueError(repr((actual, expected)))
@@ -89,46 +91,46 @@ def test_structure_padding():
 
     testcase('gap that is padding')
     members = run_on_struct(0x08, [(0x00, 'int16_t'), (0x04, 'int32_t')])
-    assert_dict_subset(members[1], {'offset': 0x02, 'name': PADDING_MEMBER_NAME})
-    assert_dict_subset(members[2], {'offset': 0x04, 'name': 'field_1'})
+    assert_attrs_eq(members[1], {'offset': 0x02, 'name': PADDING_MEMBER_NAME})
+    assert_attrs_eq(members[2], {'offset': 0x04, 'name': 'field_1'})
 
     testcase('gap that isn\'t padding because of alignment that follows')
     members = run_on_struct(0x0c, [(0x00, 'int16_t'), (0x04, 'int16_t'), (0x08, 'int32_t')])
-    assert_dict_subset(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
+    assert_attrs_eq(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
 
     testcase("gap that isn't padding because it's too large")
     members = run_on_struct(0x0c, [(0x00, 'int16_t'), (0x08, 'int32_t')])
-    assert_dict_subset(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
-    assert_dict_subset(members[2], {'offset': 0x08, 'name': 'field_1'})
+    assert_attrs_eq(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
+    assert_attrs_eq(members[2], {'offset': 0x08, 'name': 'field_1'})
 
     testcase("end padding")
     members = run_on_struct(0x08, [(0x00, 'int32_t'), (0x04, 'int16_t')])
-    assert_dict_subset(members[2], {'offset': 0x06, 'name': PADDING_MEMBER_NAME})
-    assert_dict_subset(members[3], {'offset': 0x08, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[2], {'offset': 0x06, 'name': PADDING_MEMBER_NAME})
+    assert_attrs_eq(members[3], {'offset': 0x08, 'name': END_MEMBER_NAME})
 
     testcase("no end padding")
     members = run_on_struct(0x06, [(0x00, 'int16_t'), (0x04, 'int16_t')])
-    assert_dict_subset(members[2], {'offset': 0x04, 'name': 'field_1'})
-    assert_dict_subset(members[3], {'offset': 0x06, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[2], {'offset': 0x04, 'name': 'field_1'})
+    assert_attrs_eq(members[3], {'offset': 0x06, 'name': END_MEMBER_NAME})
 
     testcase("no members")
     members = run_on_struct(0x08, [])
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': GAP_MEMBER_NAME})
-    assert_dict_subset(members[1], {'offset': 0x08, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': GAP_MEMBER_NAME})
+    assert_attrs_eq(members[1], {'offset': 0x08, 'name': END_MEMBER_NAME})
 
     testcase("no members and ZST")
     members = run_on_struct(0x00, [])
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': END_MEMBER_NAME})
 
     testcase("ZST with member.")
     members = run_on_struct(0x00, [(0x00, bn.Type.array(bn.Type.char(), 0))])
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': 'field_0'})
-    assert_dict_subset(members[1], {'offset': 0x00, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': 'field_0'})
+    assert_attrs_eq(members[1], {'offset': 0x00, 'name': END_MEMBER_NAME})
 
     testcase("gap before first member")
     members = run_on_struct(0x08, [(0x04, 'int32_t')])
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': GAP_MEMBER_NAME})
-    assert_dict_subset(members[1], {'offset': 0x04, 'name': 'field_0'})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': GAP_MEMBER_NAME})
+    assert_attrs_eq(members[1], {'offset': 0x04, 'name': 'field_0'})
 
 
 def test_packed_struct():
@@ -145,17 +147,17 @@ def test_packed_struct():
 
     testcase('smoke test')
     members = run_on_struct(0x0a, [(0x00, 'int16_t'), (0x04, 'int32_t'), (0x08, 'int16_t')])
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': 'field_0'})
-    assert_dict_subset(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
-    assert_dict_subset(members[2], {'offset': 0x04, 'name': 'field_1'})
-    assert_dict_subset(members[3], {'offset': 0x08, 'name': 'field_2'})
-    assert_dict_subset(members[4], {'offset': 0x0a, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': 'field_0'})
+    assert_attrs_eq(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
+    assert_attrs_eq(members[2], {'offset': 0x04, 'name': 'field_1'})
+    assert_attrs_eq(members[3], {'offset': 0x08, 'name': 'field_2'})
+    assert_attrs_eq(members[4], {'offset': 0x0a, 'name': END_MEMBER_NAME})
 
     testcase('end gap')
     members = run_on_struct(0x0a, [(0x00, 'int16_t')])
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': 'field_0'})
-    assert_dict_subset(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
-    assert_dict_subset(members[2], {'offset': 0x0a, 'name': END_MEMBER_NAME})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': 'field_0'})
+    assert_attrs_eq(members[1], {'offset': 0x02, 'name': GAP_MEMBER_NAME})
+    assert_attrs_eq(members[2], {'offset': 0x0a, 'name': END_MEMBER_NAME})
 
 def test_union():
     from .export_types import _structure_fields
@@ -168,5 +170,5 @@ def test_union():
     ''')
     members = list(_structure_fields(bv.types['Union'].structure, ignore=None))
     assert_equal(len(members), 2)
-    assert_dict_subset(members[0], {'offset': 0x00, 'name': 'four'})
-    assert_dict_subset(members[1], {'offset': 0x00, 'name': 'two'})
+    assert_attrs_eq(members[0], {'offset': 0x00, 'name': 'four'})
+    assert_attrs_eq(members[1], {'offset': 0x00, 'name': 'two'})

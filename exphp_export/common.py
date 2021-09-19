@@ -6,6 +6,7 @@ import binaryninja as bn
 TAG_KEYWORD = 'is'
 TypeTree = tp.Dict
 PathLike = tp.Union[str, os.PathLike]
+T = tp.TypeVar('T')
 
 def lookup_named_type_definition(bv, name: bn.QualifiedName) -> tp.Tuple[str, tp.Optional[bn.Type]]:
     """
@@ -74,7 +75,7 @@ def lookup_type_id(bv, type_id):
     # Not a typedef, so we can trust the normal lookup.
     return bv.get_type_by_id(type_id)
 
-def window2(it):
+def window2(it: tp.Iterable[T]) -> tp.Iterator[tp.Tuple[T, T]]:
     it = iter(it)
     prev = next(it)
     for x in it:
