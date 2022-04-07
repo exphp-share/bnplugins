@@ -2,13 +2,13 @@ from binaryninja import log
 import binaryninja as bn
 from touhouReverseBnutil import recording_undo, add_label, get_type_reader, open_th_bv
 
-def import_type(bv, source, name):
+def import_type(bv: bn.BinaryView, source, name):
     """ Import one or more types (recursively) from another touhou game. """
     with recording_undo(bv) as rec:
         with open_th_bv(bv, source, update_analysis=False) as src_bv:
             import_type_from_bv(bv, src_bv, name, rec=rec)
 
-def import_type_from_bv(dest_bv, src_bv, name, exist_ok=False, rec=None):
+def import_type_from_bv(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, name, exist_ok=False, rec=None):
     """
     Import one or more types from another BinaryView.
 
@@ -20,6 +20,8 @@ def import_type_from_bv(dest_bv, src_bv, name, exist_ok=False, rec=None):
             import_type_from_bv(dest_bv, src_bv, n, exist_ok=True, rec=rec)
         return
 
+    assert isinstance(name, (str, bn.QualifiedName))
+
     if dest_bv.get_type_by_name(name) is not None:
         if exist_ok:
             return
@@ -28,21 +30,21 @@ def import_type_from_bv(dest_bv, src_bv, name, exist_ok=False, rec=None):
     src_type = src_bv.get_type_by_name(name)
     if src_type is None:
         raise RuntimeError(f'type {name} not found in source bv')
+    assert isinstance(src_type, bn.StructureType), src_type
 
     if src_type.type_class == bn.TypeClass.EnumerationTypeClass:
         raise RuntimeError(f'cannot import {name}: enum import not yet implemented')
     elif src_type.type_class == bn.TypeClass.StructureTypeClass:
-        dest_structure = bn.Structure()
-        dest_structure.packed = src_type.structure.packed
+        dest_structure = bn.StructureBuilder.create()
+        dest_structure.packed = src_type.packed
 
         # first add a dummy type in case it has pointers to itself (or pointers to things that point to it, etc.)
-        dest_bv.define_user_type(name, bn.Type.structure_type(dest_structure))
+        dest_bv.define_user_type(name, dest_structure.immutable_copy())
         if rec:
             rec.enable_auto_rollback()
-        dest_structure = dest_structure.mutable_copy()
 
         offset_delta = 0
-        for member in src_type.structure.members:
+        for member in src_type.members:
             src_member_type = member.type
 
             err_loc = f'member {member.name} of {name}'
@@ -62,15 +64,17 @@ def import_type_from_bv(dest_bv, src_bv, name, exist_ok=False, rec=None):
         if dest_structure.width < dest_final_width:
             dest_structure.width = dest_final_width
 
-        dest_bv.define_user_type(name, bn.Type.structure_type(dest_structure))
+        dest_bv.define_user_type(name, dest_structure)
         log.log_warn(f'Imported type {name}')
         return get_named_type_reference(dest_bv, name)
     else:
         raise RuntimeError(f'type {name} cannot be imported from source bv ({repr(src_type.type_class)})')
 
-def _lookup_or_import_type(dest_bv, src_bv, src_type, rec=None, err_loc='<unknown>'):
-    while src_type.type_class == bn.TypeClass.NamedTypeReferenceClass:
-        src_type = src_bv.get_type_by_id(src_type.named_type_reference.type_id)
+def _lookup_or_import_type(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, src_type: bn.Type, rec=None, err_loc='<unknown>'):
+    src_type_name = None
+    while isinstance(src_type, bn.NamedTypeReferenceType):
+        src_type_name = src_type.name
+        src_type = src_bv.get_type_by_id(src_type.type_id)
         if src_type is None:
             raise RuntimeError(
                 f'Possible stale type reference in {err_loc}, go fix its type in the original DB '
@@ -91,10 +95,10 @@ def _lookup_or_import_type(dest_bv, src_bv, src_type, rec=None, err_loc='<unknow
     ]:
         # Use existing types when they exist rather than always recursively copying everything.
         # (e.g. maybe we're importing struct A which has a pointer to struct B, and B changed, but A didn't)
-        if src_type.registered_name is None:
+        if src_type_name is None:
             raise RuntimeError(f'type {src_type} at {err_loc} has no registered name')
 
-        name = src_type.registered_name.name
+        name = src_type_name
         existing_type = get_named_type_reference(dest_bv, name)
         if existing_type is not None:
             return existing_type
@@ -112,23 +116,20 @@ def _lookup_or_import_type(dest_bv, src_bv, src_type, rec=None, err_loc='<unknow
 
 # bv.get_type_by_name() returns a type that, if you try to use it as a member type, it will
 # create a nested anonymous type. We actually want a NamedTypeReference. :/
-def get_named_type_reference(bv, name, start=None, end=None, size=None):
-    t = bv.get_type_by_name(name)
-    if t is None:
-        return None
-    return bn.Type.named_type(t.registered_name, width=t.width, align=t.alignment)
+def get_named_type_reference(bv: bn.BinaryView, name):
+    return bn.Type.named_type_from_registered_type(bv, name)
 
-def make_struct_packed(bv, name, packed=True):
+def make_struct_packed(bv: bn.BinaryView, name, packed=True):
     type = bv.get_type_by_name(name)
-    if type.structure is None:
+    if not isinstance(type, bn.StructureType):
         raise RuntimeError(f'{name} is not a struct')
-    structure = type.structure.mutable_copy()
-    structure.packed = packed
-    bv.define_user_type(name, bn.Type.structure_type(structure))
+    builder = type.mutable_copy()
+    builder.packed = packed
+    bv.define_user_type(name, builder)
 
 # ========================================================================
 
-def factor_out_struct(bv, from_name, new_name, new_member='', *, start=None, end=None, size=None, autotrim=False):
+def factor_out_struct(bv: bn.BinaryView, from_name, new_name, new_member='', *, start=None, end=None, size=None, autotrim=False):
     """
     Define a new struct by extracting a group of fields from another.
 
@@ -144,8 +145,8 @@ def factor_out_struct(bv, from_name, new_name, new_member='', *, start=None, end
     if from_name == new_name:
         raise ValueError(f"Cannot factor {new_name} out from itself!")
 
-    from_struct = bv.get_type_by_name(from_name).structure
-    new_struct = bn.Structure()
+    from_struct = bv.get_type_by_name(from_name)
+    new_struct = bn.StructureBuilder.create()
     new_struct.width = size
     new_struct.packed = from_struct.packed
     for member in from_struct.members:
@@ -162,13 +163,13 @@ def factor_out_struct(bv, from_name, new_name, new_member='', *, start=None, end
             raise RuntimeError(f'Requested region would split member {repr(member.name)}')
 
     with recording_undo(bv) as rec:
-        bv.define_user_type(new_name, bn.Type.structure_type(new_struct))
+        bv.define_user_type(new_name, new_struct)
         rec.enable_auto_rollback()
 
         # replace the fields in the original struct
         from_struct = from_struct.mutable_copy()
         from_struct.insert(start, get_named_type_reference(bv, new_name), new_member)
-        bv.define_user_type(from_name, bn.Type.structure_type(from_struct))
+        bv.define_user_type(from_name, from_struct)
 
 def _strip_member_prefix(name, prefix):
     import re
@@ -184,7 +185,7 @@ def _strip_member_prefix(name, prefix):
 
 # ========================================================================
 
-def delete_range_from_struct(bv, name, *, start=None, end=None, size=None, update_parents=True):
+def delete_range_from_struct(bv: bn.BinaryView, name, *, start=None, end=None, size=None, update_parents=True):
     """
     Delete a range of offsets from a struct.
 
@@ -197,7 +198,7 @@ def delete_range_from_struct(bv, name, *, start=None, end=None, size=None, updat
         else:
             return _delete_range_from_single_struct(bv, name, start=start, end=end, size=size, rec=rec)
 
-def _delete_range_from_struct_with_parents(bv, base_name, *, base_start, base_end, base_size, rec=None):
+def _delete_range_from_struct_with_parents(bv: bn.BinaryView, base_name, *, base_start, base_end, base_size, rec=None):
     base_start, base_end, base_size = _resolve_struct_offset_range(base_start, base_end, base_size)
 
     dependents = _build_dependents_dag(bv)
@@ -213,11 +214,11 @@ def _delete_range_from_struct_with_parents(bv, base_name, *, base_start, base_en
         for (end_offset, delta_size) in reversed(changes):
             _delete_range_from_single_struct(bv, affected_name, end=end_offset, size=delta_size, rec=rec)
 
-def _delete_range_from_single_struct(bv, name, *, start=None, end=None, size=None, rec=None):
+def _delete_range_from_single_struct(bv: bn.BinaryView, name, *, start=None, end=None, size=None, rec=None):
     start, end, size = _resolve_struct_offset_range(start, end, size)
 
-    old_struct = bv.get_type_by_name(name).structure
-    new_struct = bn.Structure()
+    old_struct = bv.get_type_by_name(name)
+    new_struct = bn.StructureBuilder.create()
     new_struct.width = old_struct.width - size
     new_struct.packed = old_struct.packed
 
@@ -235,11 +236,11 @@ def _delete_range_from_single_struct(bv, name, *, start=None, end=None, size=Non
         elif rcmp is RANGE_AFTER:
             new_struct.insert(member.offset - size, member.type, member.name)
 
-    bv.define_user_type(name, bn.Type.structure_type(new_struct))
+    bv.define_user_type(name, new_struct)
     if rec:
         rec.enable_auto_rollback()
 
-def insert_space_in_struct(bv, name, start, size, *, update_parents=True):
+def insert_space_in_struct(bv: bn.BinaryView, name, start, size, *, update_parents=True):
     """
     Insert an empty region into a struct.
 
@@ -253,7 +254,7 @@ def insert_space_in_struct(bv, name, start, size, *, update_parents=True):
         else:
             return _insert_space_in_single_struct(bv, name, start, size, rec=rec)
 
-def _insert_space_in_struct_with_parents(bv, base_name, base_start, base_size, *, rec=None):
+def _insert_space_in_struct_with_parents(bv: bn.BinaryView, base_name, base_start, base_size, *, rec=None):
     dependents = _build_dependents_dag(bv)
     topological_order = _get_struct_dag_topological_order(bv, base_name, dependents)
 
@@ -269,12 +270,14 @@ def _insert_space_in_struct_with_parents(bv, base_name, base_start, base_size, *
         for (end_offset, delta_size) in reversed(changes):
             _insert_space_in_single_struct(bv, affected_name, end_offset, delta_size, rec=rec)
 
-def _insert_space_in_single_struct(bv, name, start, size, *, rec=None):
+def _insert_space_in_single_struct(bv: bn.BinaryView, name, start, size, *, rec=None):
     assert size >= 0
     log.log_info(f'{name} at {start:#x}: +{size:#x}')
 
-    old_struct = bv.get_type_by_name(name).structure
-    new_struct = bn.Structure()
+    old_struct = bv.get_type_by_name(name)
+    assert isinstance(old_struct, bn.StructureType)
+
+    new_struct = bn.StructureBuilder.create()
     new_struct.width = old_struct.width + size
     new_struct.packed = old_struct.packed
 
@@ -289,7 +292,7 @@ def _insert_space_in_single_struct(bv, name, start, size, *, rec=None):
         else:
             raise RuntimeError(f'Requested offset would split member {repr(member.name)}')
 
-    bv.define_user_type(name, bn.Type.structure_type(new_struct))
+    bv.define_user_type(name, new_struct)
     if rec:
         rec.enable_auto_rollback()
 
@@ -328,7 +331,7 @@ def _resolve_struct_offset_range(start=None, end=None, size=None):
 
 # -----
 
-def _build_dependents_dag(bv):
+def _build_dependents_dag(bv: bn.BinaryView):
     ty_dict = bv.types
     dependencies = {}
     for ty_name, ty in ty_dict.items():
@@ -341,7 +344,7 @@ def _build_dependents_dag(bv):
         # in the dep tree, fail if they show up in the topological order), but that's a
         # lot of work for little benefit.
         if ty.type_class == bn.TypeClass.StructureTypeClass:
-            dependencies[ty_name] = set(name for (_, name, _) in _get_embedded_struct_fields(bv, ty.structure))
+            dependencies[ty_name] = set(name for (_, name, _) in _get_embedded_struct_fields(bv, ty))
     dependents = _reverse_dag(dependencies)
     return dependents
 
@@ -354,7 +357,7 @@ def _reverse_dag(dag):
             out[target].add(source)
     return out
 
-def _get_struct_dag_topological_order(bv, start_name, dependents):
+def _get_struct_dag_topological_order(bv: bn.BinaryView, start_name, dependents):
     #dependents = _build_dependents_dag(bv)
 
     DONE = object()
@@ -389,7 +392,7 @@ def _get_struct_dag_topological_order(bv, start_name, dependents):
 # list of (member_end_offset, member_size_delta) sorted by offset.
 # These are each either the offset to insert a gap, or the end offset of a range to delete,
 # depending on what you're using it for.
-def _get_struct_changes(bv, topological_order, first_name, first_offset, first_delta):
+def _get_struct_changes(bv: bn.BinaryView, topological_order, first_name, first_offset, first_delta):
     assert first_delta >= 0, first_delta
     assert topological_order[0] == first_name
 
@@ -399,8 +402,8 @@ def _get_struct_changes(bv, topological_order, first_name, first_offset, first_d
     all_affected_structs = set(topological_order)
 
     for dependent_name in topological_order[1:]:
-        struct = bv.get_type_by_name(dependent_name).structure
-        assert struct, f'dependent {dependent_name} is not a struct?'
+        struct = bv.get_type_by_name(dependent_name)
+        assert isinstance(struct, bn.StructureType), f'dependent {dependent_name} is not a struct?'
 
         struct_changes = []
         struct_total_delta = 0
@@ -421,7 +424,7 @@ def _get_struct_changes(bv, topological_order, first_name, first_offset, first_d
 
 # Iterate (start_offset, type_name, multiplicity) of all members in a struct
 # that directly embed another struct (or an array of them).
-def _get_embedded_struct_fields(bv, struct):
+def _get_embedded_struct_fields(bv: bn.BinaryView, struct: bn.StructureType):
     for member in struct.members:
         ty = member.type
         multiplicity = 1
@@ -434,24 +437,26 @@ def _get_embedded_struct_fields(bv, struct):
             continue
 
         name = ty.named_type_reference.name
-        if bv.get_type_by_name(name).structure:
-            yield (member.offset, name, multiplicity)
+        match bv.get_type_by_name(name):
+            case bn.StructureType():
+                yield (member.offset, name, multiplicity)
 
 # ========================================================================
 
-def add_struct_comment(bv, name):
+def add_struct_comment(bv: bn.BinaryView, name):
     """ Add a ``zCOMMENT[0]`` comment field to the end of a struct that doesn't have one.
     A workaround for a type parsing bug introduced in binja in May 2021 that turns ``T[0]`` into ``T*``. """
 
     with recording_undo(bv) as rec:
-        struct = bv.get_type_by_name(name).structure
+        struct = bv.get_type_by_name(name)
+        assert isinstance(struct, bn.StructureType)
         struct = struct.mutable_copy()
         if struct.members and struct.members[-1].offset == struct.width:
             return  # already has a zero-sized member at the end
 
         comment_type = bn.Type.array(bv.get_type_by_name('zCOMMENT'), 0)
         struct.insert(struct.width, comment_type, '__comment')
-        bv.define_user_type(name, bn.Type.structure_type(struct))
+        bv.define_user_type(name, struct)
         rec.enable_auto_rollback()
 
 # ========================================================================

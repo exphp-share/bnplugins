@@ -101,10 +101,10 @@ def fix_vtable_method_names(bv, addr, type_name=None):
     datavar = bv.get_data_var_at(addr)
     start = datavar.address
     ty = datavar.type
-    if ty.structure:
-        structure = ty.structure
-    elif ty.named_type_reference:
-        structure = bv.get_type_by_id(ty.named_type_reference.type_id).structure
+    if isinstance(ty, bn.StructureType):
+        structure = ty
+    elif isinstance(ty, bn.NamedTypeReferenceType):
+        structure = bv.get_type_by_id(ty.type_id)
     else:
         log.log_error(f'address {addr} is not inside a vtable struct')
 
@@ -156,7 +156,8 @@ repack_name = 'zAnmManager'
 
 def repack_anm_fields(bv, addr):
     t = bv.types[repack_name]
-    s = t.structure.mutable_copy()
+    assert isinstance(t, bn.StructureType)
+    s = t.mutable_copy()
 
     remove_indices = [index for (index, field) in enumerate(s.members) if field.type.element_type == bn.Type.char() and field.name.startswith('__')]
     for index in reversed(remove_indices):

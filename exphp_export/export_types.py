@@ -87,7 +87,7 @@ class StructureField(tp.NamedTuple):
     type: tp.Optional[bn.Type]
 
 def _structure_fields(
-        structure: bn.Structure,
+        structure: bn.StructureType,
         ignore,  # field-ignoring predicate
         _name_for_debug=None,  # struct name, used only for diagnostic purposes
 ):

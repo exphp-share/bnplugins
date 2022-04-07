@@ -794,11 +794,11 @@ def fix_label_names(bvs: tp.List[bn.BinaryView]):
 #     for bv in bvs:
 #         for name, ty in bv.types.items():
 #             if ty.alignment == 4 and ty.width == 5:
-#                 if not (ty.structure is not None and ty.structure.members and ty.structure.members[0].name == 'vtable'):
+#                 if not (isinstance(ty, bn.StructureType) and ty.members and ty.members[0].name == 'vtable'):
 #                     print('skipping', name)
 #                     continue
 
-#                 s = ty.structure.mutable_copy()
+#                 s = ty.mutable_copy()
 #                 assert s.members[1].type.width == 1
 #                 s.replace(1, Type.int(4), name='__make_struct_bigger_than_a_dword_so_binja_sees_when_vtable_is_read')
 #                 bv.define_user_type(name, Type.structure_type(s))
@@ -808,7 +808,7 @@ def fix_label_names(bvs: tp.List[bn.BinaryView]):
 #         if ty.width % ty.alignment == 0:
 #             continue
 #         print(name)
-#         s = ty.structure.mutable_copy()
+#         s = ty.mutable_copy()
 #         new_width = (ty.width - (ty.width % ty.alignment)) + ty.alignment
 
 #         assert new_width >= s.width
