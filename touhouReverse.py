@@ -215,8 +215,8 @@ def name_card_vtables(bv: bn.BinaryView, jump_addr):
                 datavar = bv.get_data_var_at(vtable_addr)
                 if datavar is None: continue
                 table_type = datavar.type
-                while table_type.named_type_reference is not None:
-                    table_type = bv.get_type_by_id(table_type.named_type_reference.type_id)
+                while isinstance(table_type, bn.NamedTypeReferenceType):
+                    table_type = bv.get_type_by_id(table_type.type_id)
                 if table_type != bv.get_type_by_name('zVTableCard'): continue
                 name_symbol(bv, vtable_addr, vtable_name)
                 rec.enable_auto_rollback()

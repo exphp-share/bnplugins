@@ -518,7 +518,7 @@ def _get_AnmManager_on_draw_suffix(bv: bn.BinaryView, game, addr):
     if game == '11':
         layer_register = 'eax'
         for instr in function.llil_instructions:
-            if instr.operation == bn.LowLevelILOperation.LLIL_CALL and instr.dest.value == render_layer.address:
+            if isinstance(instr, bn.LowLevelILCall) and instr.dest.value == render_layer.address:
                 layer_value = instr.get_possible_reg_values(layer_register).value
                 if len(function.llil) <= 6:
                     return f'_just_renders_layer_{layer_value:02}'

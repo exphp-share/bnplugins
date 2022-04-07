@@ -428,15 +428,15 @@ def _get_embedded_struct_fields(bv: bn.BinaryView, struct: bn.StructureType):
     for member in struct.members:
         ty = member.type
         multiplicity = 1
-        if ty.type_class == bn.TypeClass.ArrayTypeClass:
+        if isinstance(ty, bn.ArrayType):
             multiplicity = ty.count
             ty = ty.element_type
 
         # embedded structs are always(?) type references
-        if ty.type_class != bn.TypeClass.NamedTypeReferenceClass:
+        if not isinstance(ty, bn.NamedTypeReferenceType):
             continue
 
-        name = ty.named_type_reference.name
+        name = ty.name
         match bv.get_type_by_name(name):
             case bn.StructureType():
                 yield (member.offset, name, multiplicity)
