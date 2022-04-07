@@ -58,7 +58,7 @@ def __func_meta(bv: bn.BinaryView):
     __add_static_proximities(bv, callgraph, attr='proximity')
 
     funcs = []
-    for func, next_func in window2(bv.functions + [None]):
+    for func, next_func in _window2(bv.functions + [None]):
         if next_func:
             size = next_func.start - func.start
         else:
@@ -206,7 +206,7 @@ def read_possible_shift_jis(bv: bn.BinaryView, addr, max_size=1024, max_end=floa
     except UnicodeDecodeError:
         return None
 
-def window2(it: tp.Iterable[T]) -> tp.Iterator[tp.Tuple[T, T]]:
+def _window2(it: tp.Iterable[T]) -> tp.Iterator[tp.Tuple[T, T]]:
     it = iter(it)
     prev = next(it)
     for x in it:

@@ -79,10 +79,10 @@ def recording_undo(bv: bn.BinaryView):
 
 # ========================================================================
 
-def name_function(bv, addr, name):
+def name_function(bv: bn.BinaryView, addr, name):
     bv.define_user_symbol(bn.Symbol(bn.SymbolType.FunctionSymbol, addr, name))
 
-def name_symbol(bv, addr, name):
+def name_symbol(bv: bn.BinaryView, addr, name):
     bv.define_user_symbol(bn.Symbol(bn.SymbolType.DataSymbol, addr, name))
 
 add_label = name_symbol
@@ -103,15 +103,17 @@ def read_i8(bv, addr): return struct.unpack('<b', bv.read(addr, 1))[0]
 __FLOAT_READERS = { 4: read_f32, 8: read_f64, }
 __INT_READERS = { 1: read_i8, 2: read_i16, 4: read_i32, 8: read_i64, }
 __UINT_READERS = { 1: read_u8, 2: read_u16, 4: read_u32, 8: read_u64, }
-def get_type_reader(type):
-    if type.type_class == bn.TypeClass.FloatTypeClass:
-        return __FLOAT_READERS[type.width]
-    if type.type_class == bn.TypeClass.IntegerTypeClass:
-        if type.signed:
-            return __INT_READERS[type.width]
-        else:
-            return __UINT_READERS[type.width]
-    raise ValueError(f'cannot read type {type}')
+def get_type_reader(type: bn.Type):
+    match type:
+        case bn.FloatType():
+            return __FLOAT_READERS[type.width]
+        case bn.IntegerType():
+            if type.signed:
+                return __INT_READERS[type.width]
+            else:
+                return __UINT_READERS[type.width]
+        case _:
+            raise ValueError(f'cannot read type {type}')
 
 def open_bv(path, **kw):
     # Note: This is now a context manager, hurrah!
@@ -137,7 +139,7 @@ GAME_VERSIONS = {
     'th165': 'v1.00a',
 }
 
-def open_th_bv(bv, source, update_analysis=False, **kw):
+def open_th_bv(bv: bn.BinaryView, source, update_analysis=False, **kw):
     """ Open a touhou bndb.  Another touhou bv is used to get a search directory.
 
     This is a context manager. (usable in `with`) """
@@ -154,13 +156,13 @@ def open_th_bv(bv, source, update_analysis=False, **kw):
 
 # ========================================================================
 
-def func_name_at(bv, addr):
+def func_name_at(bv: bn.BinaryView, addr):
     funcs = bv.get_functions_containing(addr)
     if not funcs:
         return None
     return funcs[0].name
 
-def llil_at(bv, addr):
+def llil_at(bv: bn.BinaryView, addr):
     funcs = bv.get_functions_containing(addr)
     if not funcs:
         return None
@@ -173,7 +175,7 @@ def llil_at(bv, addr):
         addr -= 1
     raise RuntimeError('could not find start of LLIL')
 
-def llil_begin_addr(bv, addr):
+def llil_begin_addr(bv: bn.BinaryView, addr):
     llil = llil_at(bv, addr)
     if llil:
         return llil.address
@@ -182,7 +184,7 @@ def llil_begin_addr(bv, addr):
 
 # ========================================================================
 
-def cached_llil(bv):
+def cached_llil(bv: bn.BinaryView):
     """
     Get LLIL instructions as {func_addr: [LowLevelILInstruction]}.
 
@@ -194,7 +196,7 @@ def cached_llil(bv):
         bv.session_data['exphp-cached-llil'] = {func.start: list(func.llil_instructions) for func in bv.functions}
     return bv.session_data['exphp-cached-llil']
 
-def drop_llil_cache(bv):
+def drop_llil_cache(bv: bn.BinaryView):
     if 'exphp-cached-llil' in bv.session_data:
         log.log_warn(f"Dropping LLIL cache from '{bv.file.filename}'")
         del bv.session_data['exphp-cached-llil']

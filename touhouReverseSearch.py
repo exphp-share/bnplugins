@@ -3,7 +3,7 @@ import typing as tp
 import struct
 import os
 from collections import defaultdict
-from binaryninja import log
+from binaryninja import log, BinaryView
 
 _BYTE_PAIR_INDEX = weakref.WeakKeyDictionary()  # type: ignore
 
@@ -19,7 +19,7 @@ def search_i16(bv, arg): return _search_maybe_iter(bv, arg, lambda x: struct.pac
 def search_u8(bv, arg): return _search_maybe_iter(bv, arg, lambda x: struct.pack('<B', x))
 def search_i8(bv, arg): return _search_maybe_iter(bv, arg, lambda x: struct.pack('<b', x))
 
-def _search_maybe_iter(bv, arg, packer):
+def _search_maybe_iter(bv: BinaryView, arg, packer):
     from collections.abc import Iterable
 
     if not isinstance(arg, Iterable):
@@ -30,7 +30,7 @@ def _search_maybe_iter(bv, arg, packer):
         results.extend(search_bytes(bv, packer(value)))
     return results
 
-def search_bytes(bv, bs):
+def search_bytes(bv: BinaryView, bs):
     index = _get_byte_pair_index(bv)
     if len(bs) < 2:
         raise RuntimeError('searching for less than two bytes is a bad idea...')
@@ -40,14 +40,14 @@ def search_bytes(bv, bs):
         matches = matches & set(addr - offset for addr in index[byte1, byte2])
     return sorted(matches)
 
-def _get_byte_pair_index(bv):
+def _get_byte_pair_index(bv: BinaryView):
     if bv not in _BYTE_PAIR_INDEX:
         log.log_warn(f'Generating index for {os.path.basename(bv.file.filename)}')
         _BYTE_PAIR_INDEX[bv] = _generate_byte_pair_index(bv)
 
     return _BYTE_PAIR_INDEX[bv]
 
-def _generate_byte_pair_index(bv):
+def _generate_byte_pair_index(bv: BinaryView):
     out = defaultdict(list)
     address_start = bv.sections['.text'].start
     address_end   = bv.sections['.text'].end
