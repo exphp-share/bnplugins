@@ -3,14 +3,13 @@ import os
 import re
 from binaryninja import log
 import binaryninja as bn
+from dataclasses import dataclass
+import typing as tp
 
-from touhouReverseBnutil import recording_undo, add_label, name_function, get_type_reader
+from touhouReverseBnutil import recording_undo, UndoRecorder, add_label, name_function, get_type_reader
 
 ECLMAP_SEARCH_DIR = r'F:\asd\clone\ecl-parse\map'
 
-EX_LABEL_PREFIX = None
-EX_REG = None
-EX_MAP = None
 EX_MAP_14 = {
     0x1: 'EX_DIST',
     0x2: 'EX_ANIM',
@@ -93,40 +92,77 @@ EX_MAP_11 = {
     2**29: 'EX_VELTIME',
 }
 
-def add_ex_label(bv, addr, value=None):
-    bad = False
-    if EX_LABEL_PREFIX is None:
-        log.log_error(f'must set {__name__}.EX_LABEL_PREFIX first. (e.g. to "etex", which will create "etex__case_00040000__EX_VEL")')
-        bad = True
-    if EX_REG is None:
-        log.log_error(f'must set {__name__}.EX_REG first. (to register that holds type of ex, e.g. "eax")')
-        bad = True
-    if EX_MAP is None:
-        log.log_error(f'must set {__name__}.EX_MAP first. (to register that holds type of ex, e.g. {__name__}.EX_MAP_12)')
-        bad = True
-    if bad:
-        return
+# Global config used by add_ex_label, which must be set by the user.
+@dataclass
+class _ExLabelConfig:
+    label_prefix: tp.Optional[str]
+    ex_reg: tp.Optional[str]
+    ex_map: tp.Optional[dict[int, str]]
 
+EX_LABEL_CONFIG = _ExLabelConfig(label_prefix=None, ex_reg=None, ex_map=None)
+
+def add_ex_label(bv: bn.BinaryView, addr, value=None):
+    """
+    For labeling the branches in Bullet::run_ex, LaserLine::run_ex and friends.
+
+    Bullet::run_ex is the function generally called within Bullet::on_tick which checks if any *new* `et_ex` instructions are to be
+    evaluated on this frame. This function appears to have been written as a ``switch`` whose ``cases`` were powers of two, and
+    it generally gets compiled into a nested tree of conditional jumps which seems ugly to traverse.
+    Hence, this plugin relies on a small amount of manual labor.
+
+    Usage is as follows:
+    - Set a keybind for this function.
+    - Set the attributes of touhouReverse.EX_LABEL_CONFIG in the python console.
+    - In graph disassembly view of Bullet::run_ex, click on the first instruction in any basic block which is specific
+      to a single ex flag, and use the keybind.  If the register named in ex_reg can be proven to have a single possible value,
+      a label will be generated at this case with the appropriate name.
+    - If it worked, try clicking on all of the other cases and using the keybind.  (It's kinda fun, actually.)
+
+    Typically, a number of branches for the smallest bits get compiled into an indirect jump table. (for instance, in TH17,
+    bits 0 through 6 all go in a jump table).  Sometimes, the evaluation of this jump clobbers the register holding the EX bit,
+    preventing proper case detection.
+    For those cases, you can manually call this function. E.g. ``touhouReverse.add_ex_label(bv, 0x416976, 1 << 4)`` in TH17.
+    """
+    # We have to take these as globals since this function gets bound to keybinds.
+    public_config_path = 'touhouReverse.EX_LABEL_CONFIG'
+    bad = False
+    if EX_LABEL_CONFIG.label_prefix is None:
+        log.log_error(f'must set {public_config_path}.label_prefix first. (e.g. to "etex", which will create "etex__case_00040000__EX_VEL")')
+        bad = True
+    if EX_LABEL_CONFIG.ex_reg is None:
+        log.log_error(f'must set {public_config_path}.ex_reg first. (to register that holds type of ex, e.g. "eax")')
+        bad = True
+    if EX_LABEL_CONFIG.ex_map is None:
+        log.log_error(f'must set {public_config_path}.ex_map first. (to one of the EX_MAP_* constants, e.g. {__name__}.EX_MAP_12)')
+        bad = True
+
+    if bad:
+        raise RuntimeError('could not add EX label. See log for errors.')
+
+    _add_ex_label(bv, addr, label_prefix=EX_LABEL_CONFIG.label_prefix, ex_reg=EX_LABEL_CONFIG.ex_reg, ex_map=EX_LABEL_CONFIG.ex_map, value=value)
+
+
+def _add_ex_label(bv: bn.BinaryView, addr, label_prefix, ex_reg, ex_map, value=None):
     if value is None:
         function = bv.get_functions_containing(addr)[0]
         ins = function.get_low_level_il_at(addr)
-        values = ins.get_possible_reg_values(EX_REG)
+        values = ins.get_possible_reg_values(ex_reg)
         if values is None or not hasattr(values, 'value') or values.value is None:
-            log.log_error(f"Register {EX_REG} does not have a const value at this address. ({values})")
+            log.log_error(f"Register {ex_reg} does not have a const value at this address. ({values})")
             return
         value = values.value
 
     bit = round(math.log(value) / math.log(2))
     if 2**bit != value:
-        log.log_error(f"Register {EX_REG} does not have a const value at this address. ({values})")
+        log.log_error(f"Register {ex_reg} does not have a const value at this address. ({values})")
         return
 
-    if value in EX_MAP:  # pylint: disable=unsupported-membership-test
-        name = EX_MAP[value]  # pylint: disable=unsubscriptable-object
+    if value in ex_map:  # pylint: disable=unsupported-membership-test
+        name = ex_map[value]  # pylint: disable=unsubscriptable-object
     else:
         name = ''
 
-    label = f'{EX_LABEL_PREFIX}__case_{bit:02}{"__" if name else ""}{name}'
+    label = f'{label_prefix}__case_{bit:02}{"__" if name else ""}{name}'
     comment = f'==== BIT {bit} - {name if name else "????"} ====\n\n'
     log.log_info(f'Labeling Ex {bit} at {addr}')
 
@@ -138,9 +174,6 @@ def add_ex_label(bv, addr, value=None):
 bn.PluginCommand.register_for_address('Create etEx label', 'Create an etEx label.', add_ex_label)
 
 # ========================================================================
-
-ECL_LABEL_PREFIX = None
-ECL_OVERRIDES = None
 
 # Fallback dicts for things that have multiple numbers mapping to them.
 # (the dict key is the minimal number)
@@ -257,7 +290,7 @@ def add_anm_labels(*args, **kw):
     """ Alias for add_ecl_labels. """
     return add_ecl_labels(*args, **kw)
 
-def add_ecl_labels(bv, addr, ins_offset, label_prefix, eclmap_path, fallback=None):
+def add_ecl_labels(bv: bn.BinaryView, addr, ins_offset, label_prefix, eclmap_path, fallback=None):
     """
     Note: addr is the address of the instruction that uses the table.
     For an indirect table, use the address of the first instruction.
@@ -365,7 +398,7 @@ def _read_eclmap(path):
     # assert out['vars'], 'no vars'
     return out
 
-def read_accessed_jumptable(bv, addr):
+def read_accessed_jumptable(bv: bn.BinaryView, addr):
     """
     Read a jumptable, either direct or indirect.
 
@@ -396,7 +429,7 @@ def read_accessed_jumptable(bv, addr):
         return {i:table_2[v] for (i,v) in enumerate(table_1)}, table_2[-1]
     raise RuntimeError('unable to detect jumptable type')
 
-def read_accessed_table(bv, addr):
+def read_accessed_table(bv: bn.BinaryView, addr):
     function = bv.get_functions_containing(addr)[0]
     table_address = _find_address_in_llil(bv, function.get_low_level_il_at(addr))
     table_var = bv.get_data_var_at(table_address)
@@ -411,8 +444,8 @@ def read_accessed_table(bv, addr):
     item_width = item_type.width
     return [reader(bv, table_address + i*item_width) for i in range(table_var.type.count)]
 
-def _find_address_in_llil(bv, llil):
-    def try_finding_type(search_type, llil):
+def _find_address_in_llil(bv: bn.BinaryView, llil: bn.LowLevelILInstruction):
+    def try_finding_type(search_type, llil: bn.LowLevelILInstruction):
         if llil.operation == bn.LowLevelILOperation.LLIL_JUMP_TO:
             # This has a shitton of address tokens and its AST is useless to us because there's
             # no way for us to tell what indices go where.
@@ -437,11 +470,11 @@ def _find_address_in_llil(bv, llil):
 
 # ============================================================
 
-def label_on_draw_instructions(bv, game, func_name):
+def label_on_draw_instructions(bv: bn.BinaryView, game, func_name):
     with recording_undo(bv) as rec:
         _label_on_draw_instructions(bv, game, func_name, rec)
 
-def _label_on_draw_instructions(bv, game, func_name, rec):
+def _label_on_draw_instructions(bv: bn.BinaryView, game, func_name, rec: UndoRecorder):
     register_on_draw = next(_find_functions_by_re(bv, '^(UpdateFuncRegistry::)?register__?on_draw$'))
     function = bv.get_function_at(bv.get_symbols_by_name(func_name)[0].address)
 
@@ -478,7 +511,7 @@ def _label_on_draw_instructions(bv, game, func_name, rec):
     else:
         raise RuntimeError('no applicable implementation yet for this game, go add one!')
 
-def _get_AnmManager_on_draw_suffix(bv, game, addr):
+def _get_AnmManager_on_draw_suffix(bv: bn.BinaryView, game, addr):
     function = bv.get_function_at(addr)
     render_layer = bv.get_symbols_by_name('AnmManager::render_layer')[0]
 
@@ -493,13 +526,13 @@ def _get_AnmManager_on_draw_suffix(bv, game, addr):
                     return f'_also_renders_layer_{layer_value:02}'
     raise RuntimeError(f'no layer rendered by {addr:#10x}')
 
-def _find_functions_by_re(bv, s):
+def _find_functions_by_re(bv: bn.BinaryView, s):
     r = re.compile(s)
     for f in bv.functions:
         if r.match(f.name):
             yield f
 
-def label_tmagic_err_handlers(bv):
+def label_tmagic_err_handlers(bv: bn.BinaryView):
     with recording_undo(bv) as rec:
         for func in bv.functions:
             for (ins_1, ins_2) in _window2(func.llil_instructions):
@@ -518,7 +551,7 @@ def label_tmagic_err_handlers(bv):
                 add_label(bv, address, f'sub_{address:x}_err_handler')
                 rec.enable_auto_rollback()
 
-def label_tmagic_incref(bv):
+def label_tmagic_incref(bv: bn.BinaryView):
     with recording_undo(bv) as rec:
         for func in bv.functions:
             instrs = list(func.llil_instructions)
