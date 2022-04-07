@@ -1,12 +1,13 @@
-from binaryninja import DataRenderer, InstructionTextToken, InstructionTextTokenType, DisassemblyTextLine
-from binaryninja import log, TypeClass, Type, PluginCommand
+from binaryninja import BinaryView, DataRenderer, InstructionTextToken, InstructionTextTokenType, DisassemblyTextLine
+from binaryninja import log, TypeClass, Type, ArrayType, PluginCommand
+from touhouReverseBnutil import recording_undo
 
 # datavar = bv.get_data_var_at(here)
 # datavar.type.type_class == TypeClass.ArrayTypeClass and datavar.type.element_type == Type.char()
 
 # bdr.CONTEXT[0].type == Type.named_type_from_registered_type(bv, 'BAR')
 
-def convert_to_shift_jis(bv, addr):
+def convert_to_shift_jis(bv: BinaryView, addr):
     shift_jis = Type.named_type_from_registered_type(bv, 'ShiftJis')
     if shift_jis == Type.void():
         log.log_error('No ShiftJis type.  This should be a 1-byte struct.')
@@ -18,12 +19,14 @@ def convert_to_shift_jis(bv, addr):
 
     data = bv.read(addr, 4096)
     try:
-        count = data.index(0) + 1 # TODO: is scanning for NUL safe in Shift-JIS?
+        count = data.index(0) + 1
     except ValueError:
         log.log_error('Cannot find NUL for ShiftJis string')
         return
-    
-    bv.define_user_data_var(addr, Type.array(shift_jis, count))
+
+    with recording_undo(bv) as rec:
+        bv.define_user_data_var(addr, Type.array(shift_jis, count))
+        rec.enable_auto_rollback()
 
 PluginCommand.register_for_address('Convert to ShiftJis', 'Set the type at this location to a ShiftJis[], if this type exists.', convert_to_shift_jis)
 
@@ -31,12 +34,16 @@ class ShiftJisDataRenderer(DataRenderer):
     def __init__(self):
         DataRenderer.__init__(self)
 
-    def perform_is_valid_for_data(self, ctxt, bv, addr, ty, context):
-        # Note: `named_type_from_registered_type` returns 'void' if it doesn't exist, and void arrays
-        #       are illegal, so this will gracefully return False if there's no ShiftJis type.
-        return ty.type_class == TypeClass.ArrayTypeClass and ty.element_type == Type.named_type_from_registered_type(bv, 'ShiftJis')
-        
-    def perform_get_lines_for_data(self, ctxt, bv, addr, type, prefix, width, context):
+    def perform_is_valid_for_data(self, ctxt, bv: BinaryView, addr: int, ty: Type, context):
+        try:
+            sjis_type = Type.named_type_from_registered_type(bv, 'ShiftJis')
+        except (AssertionError, ValueError, KeyError):
+            # NOTE: currently binja throws AssertionError if it doesn't exist, which is odd.
+            return False
+
+        return isinstance(ty, ArrayType) and ty.element_type == sjis_type
+
+    def perform_get_lines_for_data(self, ctxt, bv: BinaryView, addr: int, type: ArrayType, prefix, width, context):
         log.log_info('width: %s' % width)
         data = bv.read(addr, type.count)
         prefix.extend(render_shift_jis_with_fallback(data))
@@ -45,7 +52,7 @@ class ShiftJisDataRenderer(DataRenderer):
     def __del__(self):
         pass
 
-def render_shift_jis_with_fallback(text):
+def render_shift_jis_with_fallback(text: bytes):
     # We won't even bother pulling out the trailing 0 like binja normally does
     # because it won't display properly (binja gets confused by the wider characters)
     try:
@@ -59,7 +66,7 @@ DBL_QUOTE_BYTE_ESCAPES = [None] * 256
 DBL_QUOTE_UNI_ESCAPES = None
 def _init_escapes():
     global DBL_QUOTE_BYTE_ESCAPES
-    global DBL_QUOTE_UNI_ESCAPES 
+    global DBL_QUOTE_UNI_ESCAPES
 
     for x in range(32):
         DBL_QUOTE_BYTE_ESCAPES[x] = '\\x{:02}'.format(x).encode('ascii')
@@ -102,7 +109,7 @@ class BigDataRenderer(DataRenderer):
     def __init__(self):
         DataRenderer.__init__(self)
 
-    def perform_is_valid_for_data(self, ctxt, bv, addr, ty, context):
+    def perform_is_valid_for_data(self, ctxt, bv: BinaryView, addr, ty: Type, context):
         # Must be large
         if ty.width < 1000: return False
 

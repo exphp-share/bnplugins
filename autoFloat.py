@@ -1,14 +1,15 @@
 from binaryninja import log, Type, PluginCommand, Symbol, SymbolType
+import binaryninja as bn
 import numpy as np
 import struct
 
 from touhouReverseBnutil import recording_undo
 
-def convert_to_float(bv, addr, width):
+def convert_to_float(bv: bn.BinaryView, addr, width):
     with recording_undo(bv) as rec:
         _do_convert_to_float(bv, addr, width, rec=rec)
 
-def _do_convert_to_float(bv, addr, width, rec=None):
+def _do_convert_to_float(bv: bn.BinaryView, addr, width, rec=None):
     if len(bv.get_functions_containing(addr)) > 0:
         # so I can't trigger it by accident and create dumb data vars
         # (though oftentimes it still gets past this somehow...)
