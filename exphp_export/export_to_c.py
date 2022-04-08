@@ -1,9 +1,10 @@
 import os
 import re
 import itertools
+import binaryninja as bn
 
 from .config import SymbolFilters, DEFAULT_FILTERS
-from .common import lookup_named_type_definition, window2
+from .common import lookup_named_type_definition, window2, resolve_actual_enum_values
 from .export_types import _structure_fields
 from .export_types import GAP_MEMBER_NAME, PADDING_MEMBER_NAME
 
@@ -24,7 +25,7 @@ def make_c_header_zip(bvs, games, outpath, filters: SymbolFilters = DEFAULT_FILT
         zipObj.writestr(f'{dirname_inside_zip}/{game}.h', text)
     zipObj.close()
 
-def export_everything_to_c_syntax(bv, ofile, filters: SymbolFilters):
+def export_everything_to_c_syntax(bv: bn.BinaryView, ofile, filters: SymbolFilters):
     emit = lambda *args, **kw: print(*args, file=ofile, **kw)
 
     filter_re = re.compile('^(z|IDirect|D3D)')
@@ -47,15 +48,15 @@ def export_everything_to_c_syntax(bv, ofile, filters: SymbolFilters):
         if kind == 'typedef':
             continue
 
-        is_packed = kind == 'struct' and typ.structure.packed
+        is_packed = kind == 'struct' and typ.packed
         emit(f'{kind} {name} {"__packed " if is_packed else ""}{{')
 
         if kind == 'struct':
-            _struct_members_to_c_syntax(typ.structure, emit=emit, filters=filters)
+            _struct_members_to_c_syntax(typ, emit=emit, filters=filters)
         elif kind == 'union':
-            _union_members_to_c_syntax(typ.structure, emit=emit)
+            _union_members_to_c_syntax(typ, emit=emit)
         elif kind == 'enum':
-            for constant in typ.enumeration.members:
+            for constant in resolve_actual_enum_values(typ.members):
                 emit(f'    {constant.name} = {constant.value},')
         else:
             assert False
@@ -63,7 +64,7 @@ def export_everything_to_c_syntax(bv, ofile, filters: SymbolFilters):
         emit(f'}};  // {typ.width:#x}')
         emit()
 
-def _struct_members_to_c_syntax(structure, emit, filters: SymbolFilters):
+def _struct_members_to_c_syntax(structure: bn.StructureType, emit, filters: SymbolFilters):
     # Use _structure_fields to identify gaps and padding
     ignore = lambda name, type: not filters.is_useful_struct_member(name, type)
     rows = list(_structure_fields(structure, ignore=ignore))
@@ -72,17 +73,17 @@ def _struct_members_to_c_syntax(structure, emit, filters: SymbolFilters):
     members = [m for m in structure.members if filters.is_useful_struct_member(m.name, m.type)]
 
     # Make sure we are capable of matching
-    assert len(members) == len([row for row in rows if row['type'] is not None])
+    assert len(members) == len([row for row in rows if row.type is not None])
     members_iter = iter(members)
     gap_indices = itertools.count(0)
     for row, nextRow in window2(rows):
-        if row['type'] is None:
-            if row['name'] == GAP_MEMBER_NAME:
-                size = nextRow['offset'] - row['offset']
+        if row.type is None:
+            if row.name == GAP_MEMBER_NAME:
+                size = nextRow.offset - row.offset
                 emit(f'    char __gap_{next(gap_indices)}[{size:#x}];  // {row["offset"]:#x}')
-            elif row['name'] == PADDING_MEMBER_NAME:
+            elif row.name == PADDING_MEMBER_NAME:
                 pass
-            else: assert False, row['name']
+            else: assert False, row.name
             continue
 
         member = next(members_iter)
@@ -93,11 +94,11 @@ def _struct_members_to_c_syntax(structure, emit, filters: SymbolFilters):
     # make sure the two iterators didn't fall out of sync
     _expect_empty_iterator(members_iter)
 
-def _union_members_to_c_syntax(structure, emit):
+def _union_members_to_c_syntax(structure: bn.StructureType, emit):
     for member in structure.members:
         emit(f'    {_format_c_style_declaration(member.type, member.name)};')
 
-def _format_c_style_declaration(type, name):
+def _format_c_style_declaration(type: bn.Type, name):
     before = type.get_string_before_name()
     after = type.get_string_after_name()
     return f'{before} {name}{after}'

@@ -4,7 +4,7 @@ import re
 from binaryninja import log
 import binaryninja as bn
 
-from .common import TAG_KEYWORD, TypeTree, lookup_named_type_definition, window2
+from .common import TAG_KEYWORD, TypeTree, lookup_named_type_definition, window2, resolve_actual_enum_values
 from .config import DEFAULT_FILTERS, SymbolFilters, SimpleFilters
 
 # ==============================================================================
@@ -35,7 +35,7 @@ def _create_types_file_json(
             'align': ty.alignment,
         }
         if classification == 'struct' or classification == 'union':
-            cereal.update(structure_to_cereal(ty.structure, ttree_converter, _name_for_debug=type_name, filters=filters))
+            cereal.update(structure_to_cereal(ty, ttree_converter, _name_for_debug=type_name, filters=filters))
         elif classification == 'enum':
             cereal.update(enum_to_cereal(ty))
         elif classification == 'typedef':
@@ -50,14 +50,17 @@ def _create_types_file_json(
 
     return types
 
-def enum_to_cereal(enumeration_ty):
+def enum_to_cereal(enumeration_ty: bn.EnumerationType):
     return {
         'signed': bool(enumeration_ty.signed),
-        'values': [{'name': m.name, 'value': m.value} for m in enumeration_ty.enumeration.members],
+        'values': [{'name': m.name, 'value': m.value} for m in resolve_actual_enum_values(enumeration_ty.members)],
     }
 
-def structure_to_cereal(structure, ttree_converter: 'TypeToTTreeConverter', filters: SymbolFilters, _name_for_debug=None):
-    keep = lambda name, ty: structure.union or filters.is_useful_struct_member(name, ty)
+def structure_to_cereal(structure: bn.StructureType, ttree_converter: 'TypeToTTreeConverter', filters: SymbolFilters, _name_for_debug=None):
+    keep = lambda name, ty: (
+        structure.type == bn.StructureVariant.UnionStructureType
+        or filters.is_useful_struct_member(name, ty)
+    )
     ignore = lambda name, ty: not keep(name, ty)
 
     fields_iter = _structure_fields(structure, ignore=ignore, _name_for_debug=_name_for_debug)
@@ -65,7 +68,10 @@ def structure_to_cereal(structure, ttree_converter: 'TypeToTTreeConverter', filt
     for d in fields_iter:
         ty_json = None if d['type'] is None else ttree_converter.to_ttree(d['type'])
 
-        out_row: tp.Dict[str, tp.Any] = {} if structure.union else {'offset': hex(d['offset'])}
+        out_row: tp.Dict[str, tp.Any] = {
+            bn.StructureVariant.UnionStructureType: {},
+            bn.StructureVariant.StructStructureType: {'offset': hex(d['offset'])},
+        }[structure.type]
         out_row.update({'name': d['name'], 'type': ty_json})
         output_members.append(out_row)
 
@@ -94,10 +100,10 @@ def _structure_fields(
     if ignore is None:
         ignore = lambda name, ty: False
 
+    # A fake field at the max offset which helps simplify some things
     end_marker = StructureField(offset=structure.width, name=END_MEMBER_NAME, type=None)
 
     # Ignore some fields.
-    # A fake field at the max offset which helps simplify some things
     effective_members = [StructureField(offset=x.offset, name=x.name, type=x.type) for x in structure.members]
     effective_members = [m for m in effective_members if not ignore(m.name, m.type)]
     effective_members.append(end_marker)
@@ -112,7 +118,7 @@ def _structure_fields(
 
     for field, next_field in window2(effective_members):
         yield field
-        if structure.union:
+        if structure.type == bn.StructureVariant.UnionStructureType:
             continue # no gaps for unions
 
         # A gap may follow, but in a non-packed struct it may be identifiable as padding
@@ -129,7 +135,7 @@ def _structure_fields(
         if next_field.offset != gap_start:
             yield StructureField(offset=field.offset + field.type.width, name=gap_name, type=None)
 
-    if not structure.union:
+    if structure.type == bn.StructureVariant.StructStructureType:
         # Also put an end marker in the output because it's useful to downstream code
         yield end_marker
 
@@ -154,77 +160,74 @@ class TypeToTTreeConverter:
     # cannot be chained through.  (e.g. an object field not called 'inner').
     # Otherwise they should use '_to_ttree_nested'.
     def _to_ttree_nested(self, ty):
-        if ty.type_class == bn.TypeClass.ArrayTypeClass:
-            return {TAG_KEYWORD: 'array', 'len': ty.count, 'inner': self._to_ttree_nested(ty.element_type)}
+        match ty:
+            case bn.ArrayType():
+                return {TAG_KEYWORD: 'array', 'len': ty.count, 'inner': self._to_ttree_nested(ty.element_type)}
 
-        elif ty.type_class == bn.TypeClass.PointerTypeClass:
-            # FIXME this check should probably resolve NamedTypeReferences in the target,
-            # in case there are typedefs to bare (non-ptr) function types.
-            if ty.target.type_class == bn.TypeClass.FunctionTypeClass:
-                return self._function_ptr_type_to_ttree(ty.target)
+            case bn.PointerType():
+                # FIXME this check should probably resolve NamedTypeReferences in the target,
+                # in case there are typedefs to bare (non-ptr) function types.
+                if ty.target.type_class == bn.TypeClass.FunctionTypeClass:
+                    return self._function_ptr_type_to_ttree(ty.target)
 
-            d = {TAG_KEYWORD: 'ptr', 'inner': self._to_ttree_nested(ty.target), 'const': ty.const}
-            if not d['const']:
-                del d['const']
-            return d
+                d = {TAG_KEYWORD: 'ptr', 'inner': self._to_ttree_nested(ty.target), 'const': ty.const}
+                if not d['const']:
+                    del d['const']
+                return d
 
-        elif ty.type_class == bn.TypeClass.NamedTypeReferenceClass:
-            if ty.registered_name is not None:
-                # A raw typedef, instead of a reference to one.
-                # Typically to get this, you'd have to call `bv.get_type_by_name` on a typedef name.
-                #
-                # It's not clear when type_to_ttree would ever be called with one.
-                return {TAG_KEYWORD: 'named', 'name': str(ty.registered_name.name)}
-            # could be a 'struct Ident' field, or a regular typedef
-            return {TAG_KEYWORD: 'named', 'name': str(ty.named_type_reference.name)}
+            case bn.NamedTypeReferenceType():
+                if ty.registered_name is not None:
+                    # A raw typedef, instead of a reference to one.
+                    # Typically to get this, you'd have to call `bv.get_type_by_name` on a typedef name.
+                    #
+                    # It's not clear when type_to_ttree would ever be called with one.
+                    return {TAG_KEYWORD: 'named', 'name': str(ty.registered_name.name)}
+                # could be a 'struct Ident' field, or a regular typedef
+                return {TAG_KEYWORD: 'named', 'name': str(ty.name)}
 
-        elif ty.type_class in [bn.TypeClass.StructureTypeClass, bn.TypeClass.EnumerationTypeClass]:
-            if ty.registered_name is not None:
-                # A raw struct, enum, or union declaration, instead of a reference to one.
-                #
-                # It's not clear when type_to_ttree would ever be called with this.
-                return {TAG_KEYWORD: 'named', 'name': str(ty.registered_name.name)}
+            case bn.StructureType() | bn.EnumerationType():
+                if ty.registered_name is not None:
+                    # A raw struct, enum, or union declaration, instead of a reference to one.
+                    #
+                    # It's not clear when type_to_ttree would ever be called with this.
+                    return {TAG_KEYWORD: 'named', 'name': str(ty.registered_name.name)}
 
-            # an anonymous struct/union/enum
-            output = {
-                TAG_KEYWORD: None,  # to be filled
-                'size': hex(ty.width),
-                'align': ty.alignment,
-            }
-            if ty.type_class == bn.TypeClass.EnumerationTypeClass:
-                output[TAG_KEYWORD] = 'enum'
-                output.update(enum_to_cereal(ty.enumeration))
-            else:
-                assert ty.type_class == bn.TypeClass.StructureTypeClass
-                output[TAG_KEYWORD] = 'union' if ty.structure.union else 'struct'
-                output.update(structure_to_cereal(ty.structure, self, filters=SimpleFilters()))
-            assert output[TAG_KEYWORD] is not None
-            return output
+                # an anonymous struct/union/enum
+                output = {
+                    TAG_KEYWORD: None,  # to be filled
+                    'size': hex(ty.width),
+                    'align': ty.alignment,
+                }
+                if isinstance(ty, bn.EnumerationType):
+                    output[TAG_KEYWORD] = 'enum'
+                    output.update(enum_to_cereal(ty))
+                else:
+                    assert isinstance(ty, bn.StructureType)
+                    output[TAG_KEYWORD] = {
+                        bn.StructureVariant.StructStructureType: 'struct',
+                        bn.StructureVariant.UnionStructureType: 'union',
+                    }[ty.type]
+                    output.update(structure_to_cereal(ty, self, filters=SimpleFilters()))
+                assert output[TAG_KEYWORD] is not None
+                return output
 
-        elif ty.type_class == bn.TypeClass.VoidTypeClass:
-            return {TAG_KEYWORD: 'void'}
-        elif ty.type_class == bn.TypeClass.IntegerTypeClass:
-            return {TAG_KEYWORD: 'int', 'signed': bool(ty.signed), 'size': ty.width}
-        elif ty.type_class == bn.TypeClass.FloatTypeClass:
-            return {TAG_KEYWORD: 'float', 'size': ty.width}
-        elif ty.type_class == bn.TypeClass.BoolTypeClass:
-            return {TAG_KEYWORD: 'int', 'signed': False, 'size': ty.width}
-        elif ty.type_class == bn.TypeClass.WideCharTypeClass:
-            return {TAG_KEYWORD: 'int', 'signed': False, 'size': ty.width}
+            case bn.VoidType():
+                return {TAG_KEYWORD: 'void'}
+            case bn.IntegerType():
+                return {TAG_KEYWORD: 'int', 'signed': bool(ty.signed), 'size': ty.width}
+            case bn.FloatType():
+                return {TAG_KEYWORD: 'float', 'size': ty.width}
+            case bn.BoolType():
+                return {TAG_KEYWORD: 'int', 'signed': False, 'size': ty.width}
+            case bn.WideCharType():
+                return {TAG_KEYWORD: 'int', 'signed': False, 'size': ty.width}
 
-        elif ty.type_class == bn.TypeClass.FunctionTypeClass:
-            raise RuntimeError(f"bare FunctionTypeClass not supported (only function pointers): {ty}")
-        elif ty.type_class == bn.TypeClass.ValueTypeClass:
-            # not sure where you get one of these
-            raise RuntimeError(f"ValueTypeClass not supported: {ty}")
-        elif ty.type_class == bn.TypeClass.VarArgsTypeClass:
-            # I don't know how you get this;  va_list is just an alias for char*,
-            # and variadic functions merely set .has_variable_arguments = True.
-            raise RuntimeError(f"VarArgsTypeClass not supported: {ty}")
-        else:
-            raise RuntimeError(f"Unsupported type {ty}")
+            case bn.FunctionType():
+                raise RuntimeError(f"bare FunctionType not supported (only function pointers): {ty}")
+            case _:
+                raise RuntimeError(f"Unsupported type {ty}")
 
-    def _function_ptr_type_to_ttree(self, func_ty):
+    def _function_ptr_type_to_ttree(self, func_ty: bn.FunctionType):
         parameters = list(func_ty.parameters)
         abi = func_ty.calling_convention and str(func_ty.calling_convention)
 
@@ -269,7 +272,7 @@ def _possibly_nest_flattened_ttree(ttree):
 # # V1 types
 
 # def structure_to_cereal_v1(structure: bn.Structure, filters: SymbolFilters, _name_for_debug=None):
-#     assert not structure.union
+#     assert structure.type == bn.StructureVariant.StructStructureType
 
 #     keep = lambda name, ty: filters.is_useful_struct_member(name, ty)
 #     ignore = lambda name, ty: not keep(name, ty)

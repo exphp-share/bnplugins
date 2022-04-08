@@ -8,7 +8,7 @@ TypeTree = tp.Dict
 PathLike = tp.Union[str, os.PathLike]
 T = tp.TypeVar('T')
 
-def lookup_named_type_definition(bv, name: bn.QualifiedName) -> tp.Tuple[str, tp.Optional[bn.Type]]:
+def lookup_named_type_definition(bv: bn.BinaryView, name: bn.QualifiedName) -> tp.Tuple[str, tp.Optional[bn.Type]]:
     """
     Look up a named type, while dealing with all of binary ninja's typedef oddities.
 
@@ -23,39 +23,39 @@ def lookup_named_type_definition(bv, name: bn.QualifiedName) -> tp.Tuple[str, tp
     """
     ty = bv.get_type_by_name(name)
 
-    # Binja wouldn't have auto-expanded a typedef referring to a struct or enum,
-    # so in these cases we can be sure that 'name' refers to the struct/enum itself.
-    if ty.type_class == bn.TypeClass.EnumerationTypeClass:
-        return ('enum', None)
-    elif ty.type_class == bn.TypeClass.StructureTypeClass:
-        return ('union' if ty.structure.union else 'struct', None)
+    match ty:
+        # Binja wouldn't have auto-expanded a typedef referring to a struct or enum,
+        # so in these cases we can be sure that 'name' refers to the struct/enum itself.
+        case bn.EnumerationType():
+            return ('enum', None)
+        case bn.StructureType():
+            return ({
+                bn.StructureVariant.StructStructureType: 'struct',
+                bn.StructureVariant.UnionStructureType: 'union',
+            }[ty.type], None)
 
-    # If we make it here, it's a typedef.
-    #
-    # When you lookup a typedef (either by name or type_id), the following occurs:
-    #
-    # - If the expansion of the typedef is itself a named type (struct, enum, typedef),
-    #   binja returns a NamedTypeReference representing the typedef itself. (not the target!)
-    # - Otherwise, binja returns a type representing the expansion (and you lose
-    #   all context related to the typedef)
-    if (
-        ty.type_class == bn.TypeClass.NamedTypeReferenceClass
-        and ty.registered_name
-        and ty.registered_name.name == name
-    ):
-        # This is the typedef itself.  We want the expansion!
+        # If we make it here, it's a typedef.
         #
-        # Thankfully, we know that the resulting type is named, so we can call
-        # 'Type.named_type_from_registered_type' which is one of the very few methods capable
-        # of producing an unexpanded typedef that points to an unnamed type.
-        # (dodging a nasty corner case when dealing with a typedef to a typedef to an unnamed type)
-        expn_type_name = ty.named_type_reference.name
-        return ('typedef', bn.Type.named_type_from_registered_type(bv, expn_type_name))
-    else:
-        # This is the expansion.
-        return ('typedef', ty)
+        # When you lookup a typedef (either by name or type_id), the following occurs:
+        #
+        # - If the expansion of the typedef is itself a named type (struct, enum, typedef),
+        #   binja returns a NamedTypeReference representing the typedef itself. (not the target!)
+        # - Otherwise, binja returns a type representing the expansion (and you lose
+        #   all context related to the typedef)
+        case bn.NamedTypeReferenceType() if ty.registered_name and ty.registered_name.name == name:
+            # This is the typedef itself.  We want the expansion!
+            #
+            # Thankfully, we know that the resulting type is named, so we can call
+            # 'Type.named_type_from_registered_type' which is one of the very few methods capable
+            # of producing an unexpanded typedef that points to an unnamed type.
+            # (dodging a nasty corner case when dealing with a typedef to a typedef to an unnamed type)
+            expn_type_name = ty.name
+            return ('typedef', bn.Type.named_type_from_registered_type(bv, expn_type_name))
+        case _:
+            # This is the expansion.
+            return ('typedef', ty)
 
-def lookup_type_id(bv, type_id):
+def lookup_type_id(bv: bn.BinaryView, type_id):
     """
     Look up a type by type id.  This will always produce a NamedTypeReference for typedefs,
     even when the normal lookup mechanism wouldn't.
@@ -74,6 +74,14 @@ def lookup_type_id(bv, type_id):
 
     # Not a typedef, so we can trust the normal lookup.
     return bv.get_type_by_id(type_id)
+
+def resolve_actual_enum_values(members: tp.Iterable[bn.EnumerationMember]) -> tp.Iterator[bn.EnumerationMember]:
+    """ Replace all `None`'s in an enumeration's member list with their actual integer values. """
+    next_auto = 0
+    for member in members:
+        value = member.value if member.value is not None else next_auto
+        next_auto = value + 1
+        yield bn.EnumerationMember(name=member.name, value=value)
 
 def window2(it: tp.Iterable[T]) -> tp.Iterator[tp.Tuple[T, T]]:
     it = iter(it)

@@ -16,7 +16,7 @@ from binaryninja import log
 import binaryninja as bn
 from pathlib import Path
 
-from .common import TypeTree, TAG_KEYWORD, PathLike, lookup_named_type_definition
+from .common import TypeTree, TAG_KEYWORD, PathLike, lookup_named_type_definition, resolve_actual_enum_values
 from .config import SymbolFilters, DEFAULT_FILTERS, TypeOrigin
 from .export_types import _create_types_file_json, TypeToTTreeConverter, _structure_fields
 
@@ -403,11 +403,11 @@ def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
 
         classification, extra_payload = lookup_named_type_definition(bv, type_name)
         if classification == 'struct':
-            structs[type_name] = structure_to_cereal_v1(ty.structure, filters, _name_for_debug=type_name)
+            structs[type_name] = structure_to_cereal_v1(ty, filters, _name_for_debug=type_name)
         elif classification == 'union':
-            unions[type_name] = union_to_cereal_v1(ty.structure, _name_for_debug=type_name)
+            unions[type_name] = union_to_cereal_v1(ty, _name_for_debug=type_name)
         elif classification == 'enum':
-            enums[type_name] = enum_to_cereal_v1(ty.enumeration)
+            enums[type_name] = enum_to_cereal_v1(ty)
         elif classification == 'typedef':
             typedef_target = extra_payload
             typedefs[type_name] = {'def': str(typedef_target), 'size': typedef_target.width}
@@ -448,8 +448,8 @@ def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
                 nice_json(f, structs_by_origin[origin], struct_schema)
 
 
-def structure_to_cereal_v1(structure: bn.Structure, filters: SymbolFilters, _name_for_debug=None):
-    assert not structure.union
+def structure_to_cereal_v1(structure: bn.StructureType, filters: SymbolFilters, _name_for_debug=None):
+    assert structure.type == bn.StructureVariant.StructStructureType
 
     keep = lambda name, ty: filters.is_useful_struct_member(name, ty)
     ignore = lambda name, ty: not keep(name, ty)
@@ -457,14 +457,14 @@ def structure_to_cereal_v1(structure: bn.Structure, filters: SymbolFilters, _nam
 
     return [(hex(m.offset), m.name, str(m.type) if m.type is not None else None) for m in fields]
 
-def union_to_cereal_v1(structure: bn.Structure, _name_for_debug=None):
-    assert structure.union
+def union_to_cereal_v1(structure: bn.StructureType, _name_for_debug=None):
+    assert structure.type == bn.StructureVariant.UnionStructureType
     fields = _structure_fields(structure, ignore=lambda *args,**kw: False, _name_for_debug=_name_for_debug)
 
     return [(m.name, str(m.type) if m.type is not None else None) for m in fields]
 
-def enum_to_cereal_v1(enumeration: bn.Enumeration):
-    return [(m.name, m.value) for m in enumeration.members]
+def enum_to_cereal_v1(enumeration: bn.EnumerationType):
+    return [(m.name, m.value) for m in resolve_actual_enum_values(enumeration.members)]
 
 def split_dict(input: tp.Dict[K, V], key: tp.Callable[[K, V], G], use_defaultdict=False) -> tp.Mapping[G, tp.Dict[K, V]]:
     """ Turn a dict into a nested dict that groups the original entries according to a key function. """
@@ -528,7 +528,7 @@ def import_funcs_from_json(bv, funcs, emit_status=None):
 def import_statics_from_json(bv, statics, emit_status=None):
     return _import_symbols_from_json_v1(bv, statics, bn.SymbolType.DataSymbol, emit_status=emit_status)
 
-def _import_symbols_from_json_v1(bv, symbols, symbol_type, emit_status=None):
+def _import_symbols_from_json_v1(bv: bn.BinaryView, symbols, symbol_type, emit_status=None):
     changed = False
     for d in symbols:
         addr = int(d['addr'], 16)
@@ -752,8 +752,8 @@ def fix_label_names(bvs: tp.List[bn.BinaryView]):
 #     for bv in bvs:
 #         for k in names_to_consider:
 #             typ = bv.get_type_by_name(k)
-#             if typ is not None and typ.type_class == TypeClass.StructureTypeClass:
-#                 if typ.structure.members and typ.structure.members[0].name == 'lpVtbl':
+#             if typ is not None and isinstance(typ, bn.StructureType):
+#                 if typ.members and typ.members[0].name == 'lpVtbl':
 #                     # print('-', k, bv)
 #                     fix_vtable_name(bv, k)
 
@@ -761,8 +761,8 @@ def fix_label_names(bvs: tp.List[bn.BinaryView]):
 #     for bv in bvs:
 #         for k in names_to_consider:
 #             typ = bv.get_type_by_name(k)
-#             if typ is not None and typ.type_class == TypeClass.StructureTypeClass:
-#                 if typ.structure.members and typ.structure.members[0].name == 'parent':
+#             if typ is not None and isinstance(typ, bn.StructureType):
+#                 if typ.members and typ.members[0].name == 'parent':
 #                     # print('-', k, bv)
 #                     fix_super_name(bv, k)
 
@@ -770,25 +770,27 @@ def fix_label_names(bvs: tp.List[bn.BinaryView]):
 #     for bv in bvs:
 #         for k in names_to_consider:
 #             typ = bv.get_type_by_name(k)
-#             if typ is not None and typ.type_class == TypeClass.StructureTypeClass:
-#                 if typ.structure.members and typ.structure.members[0].name == 'parent':
+#             if typ is not None and isinstance(typ, bn.StructureType):
+#                 if typ.members and typ.members[0].name == 'parent':
 #                     # print('-', k, bv)
 #                     fix_super_name(bv, k)
 
-# def fix_vtable_name(bv, name):
+# def fix_vtable_name(bv: bn.BinaryView, name):
 #     typ = bv.get_type_by_name(name)
-#     structure = typ.structure.mutable_copy()
+#     assert isinstance(typ, bn.StructureType)
+#     structure = typ.mutable_copy()
 #     assert structure.members[0].name == 'lpVtbl'
 #     structure.replace(0, structure.members[0].type, 'vtable')
-#     bv.define_user_type(name, Type.structure_type(structure))
+#     bv.define_user_type(name, structure)
 
 
-# def fix_super_name(bv, name):
+# def fix_super_name(bv: bn.BinaryView, name):
 #     typ = bv.get_type_by_name(name)
-#     structure = typ.structure.mutable_copy()
+#     assert isinstance(typ, bn.StructureType)
+#     structure = typ.mutable_copy()
 #     assert structure.members[0].name == 'parent'
 #     structure.replace(0, structure.members[0].type, 'super')
-#     bv.define_user_type(name, Type.structure_type(structure))
+#     bv.define_user_type(name, structure)
 
 # def fix_all_object_sizes(bvs):
 #     for bv in bvs:
@@ -798,25 +800,25 @@ def fix_label_names(bvs: tp.List[bn.BinaryView]):
 #                     print('skipping', name)
 #                     continue
 
-#                 s = ty.mutable_copy()
-#                 assert s.members[1].type.width == 1
-#                 s.replace(1, Type.int(4), name='__make_struct_bigger_than_a_dword_so_binja_sees_when_vtable_is_read')
-#                 bv.define_user_type(name, Type.structure_type(s))
+#                 struct = ty.mutable_copy()
+#                 assert struct.members[1].type.width == 1
+#                 struct.replace(1, bn.Type.int(4), name='__make_struct_bigger_than_a_dword_so_binja_sees_when_vtable_is_read')
+#                 bv.define_user_type(name, struct)
 
-# def fix_struct_sizes_for_alignment(bv):
+# def fix_struct_sizes_for_alignment(bv: bn.BinaryView):
 #     for name, ty in bv.types.items():
 #         if ty.width % ty.alignment == 0:
 #             continue
 #         print(name)
-#         s = ty.mutable_copy()
+#         struct = ty.mutable_copy()
 #         new_width = (ty.width - (ty.width % ty.alignment)) + ty.alignment
 
-#         assert new_width >= s.width
-#         assert new_width - s.alignment < s.width
-#         s.width = new_width
-#         assert s.width % s.alignment == 0
+#         assert new_width >= struct.width
+#         assert new_width - struct.alignment < struct.width
+#         struct.width = new_width
+#         assert struct.width % struct.alignment == 0
 
-#         bv.define_user_type(name, Type.structure_type(s))
+#         bv.define_user_type(name, struct)
 
 # def fff(r, bvs):
 #     for (i,g) in enumerate(GAMES):

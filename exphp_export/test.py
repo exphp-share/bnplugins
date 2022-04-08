@@ -80,7 +80,7 @@ def test_structure_padding():
 
     def run_on_struct(size, data):
         bv = bn.BinaryView()
-        structure = bn.Structure()
+        structure = bn.StructureBuilder.create()
         structure.width = size
         for i, (offset, ty) in enumerate(data):
             if isinstance(ty, str):
@@ -138,7 +138,7 @@ def test_packed_struct():
 
     def run_on_struct(size, data):
         bv = bn.BinaryView()
-        structure = bn.Structure()
+        structure = bn.StructureBuilder.create()
         structure.packed = True
         structure.width = size
         for i, (offset, typestr) in enumerate(data):
@@ -168,7 +168,7 @@ def test_union():
             int16_t two;
         }
     ''')
-    members = list(_structure_fields(bv.types['Union'].structure, ignore=None))
+    members = list(_structure_fields(bv.types['Union'], ignore=None))
     assert_equal(len(members), 2)
     assert_attrs_eq(members[0], {'offset': 0x00, 'name': 'four'})
     assert_attrs_eq(members[1], {'offset': 0x00, 'name': 'two'})

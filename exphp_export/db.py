@@ -76,27 +76,28 @@ class BinaryViewChanger:
         if ty is None:
             return False
 
-        if ty.type_class == bn.TypeClass.StructureTypeClass:
-            structure = ty.structure.mutable_copy()
-            i = self._get_named_member_index(structure, old)
-            if i is None:
+        match ty:
+            case bn.StructureType():
+                builder = ty.mutable_copy()
+                i = self._get_named_member_index(builder, old)
+                if i is None:
+                    return False
+                builder.replace(i, builder.members[i].type, new)
+                new_ty = bn.Type.structure_type(builder)
+            case bn.EnumerationType():
+                builder = ty.mutable_copy()
+                i = self._get_named_member_index(builder, old)
+                if i is None:
+                    return False
+                builder.replace(i, new, builder.members[i].value)
+                new_ty = bn.Type.enumeration_type(self.bv.arch, builder, width=ty.width, sign=ty.signed)
+            case _:
                 return False
-            structure.replace(i, structure.members[i].type, new)
-            new_ty = bn.Type.structure_type(structure)
-        elif ty.type_class == bn.TypeClass.EnumerationTypeClass:
-            enumeration = ty.enumeration.mutable_copy()
-            i = self._get_named_member_index(enumeration, old)
-            if i is None:
-                return False
-            enumeration.replace(i, new, enumeration.members[i].value)
-            new_ty = bn.Type.enumeration_type(self.bv.arch, enumeration, width=ty.width, sign=ty.signed)
-        else:
-            return False
 
         self.bv.define_user_type(type_name, new_ty)
         return True
 
-    def _get_named_member_index(self, structure_or_enumeration, name):
+    def _get_named_member_index(self, structure_or_enumeration: bn.StructureType | bn.EnumerationType, name):
         member_names = [member.name for member in structure_or_enumeration.members]
         try:
             return member_names.index(name)
