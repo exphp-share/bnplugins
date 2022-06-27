@@ -99,7 +99,7 @@ def _lookup_or_import_type(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, src_ty
             raise RuntimeError(f'type {src_type} at {err_loc} has no registered name')
 
         name = src_type_name
-        existing_type = get_named_type_reference(dest_bv, name)
+        existing_type = try_get_named_type_reference(dest_bv, name)
         if existing_type is not None:
             return existing_type
 
@@ -118,6 +118,12 @@ def _lookup_or_import_type(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, src_ty
 # create a nested anonymous type. We actually want a NamedTypeReference. :/
 def get_named_type_reference(bv: bn.BinaryView, name):
     return bn.Type.named_type_from_registered_type(bv, name)
+
+def try_get_named_type_reference(bv: bn.BinaryView, name):
+    try:
+        return bn.Type.named_type_from_registered_type(bv, name)
+    except AssertionError:  # why does this throw AssertionError and not ValueError/KeyError?
+        return None
 
 def make_struct_packed(bv: bn.BinaryView, name, packed=True):
     type = bv.get_type_by_name(name)

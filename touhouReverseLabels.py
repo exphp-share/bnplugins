@@ -290,7 +290,7 @@ def add_anm_labels(*args, **kw):
     """ Alias for add_ecl_labels. """
     return add_ecl_labels(*args, **kw)
 
-def add_ecl_labels(bv: bn.BinaryView, addr, ins_offset, label_prefix, eclmap_path, fallback=None):
+def add_ecl_labels(bv: bn.BinaryView, addr, ins_offset, label_prefix, eclmap_path=None, fallback=None):
     """
     Note: addr is the address of the instruction that uses the table.
     For an indirect table, use the address of the first instruction.
@@ -302,15 +302,15 @@ def add_ecl_labels(bv: bn.BinaryView, addr, ins_offset, label_prefix, eclmap_pat
 
     jumptable, jumptable_last_address = read_accessed_jumptable(bv, addr)
     jumptable = {k+ins_offset:v for (k,v) in jumptable.items()}
-    eclmap = _read_eclmap(eclmap_path)
+    eclmap = _read_eclmap(eclmap_path) if eclmap_path is not None else None
 
     if label_prefix[-4:] in ['ival', 'fval', 'iptr', 'fptr']:
         comment_prefix = 'var'
-        mapping = eclmap['vars']
+        mapping = eclmap['vars'] if eclmap else {}
         num_formatter = lambda x: str(abs(x))
     else:
         comment_prefix = 'ins'
-        mapping = eclmap['ins']
+        mapping = eclmap['ins'] if eclmap else {}
         num_formatter = str  # FIXME why not always do str(abs(x))? I forgot.
 
     nums_by_address = {}

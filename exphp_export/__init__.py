@@ -18,7 +18,8 @@ from pathlib import Path
 
 from .common import TypeTree, TAG_KEYWORD, PathLike, lookup_named_type_definition, resolve_actual_enum_values
 from .config import SymbolFilters, DEFAULT_FILTERS, TypeOrigin
-from .export_types import _create_types_file_json, TypeToTTreeConverter, _structure_fields
+from .export_types import _create_types_file_json, TypeToTTreeConverter, structure_to_cereal_v1, enum_to_cereal_v1, union_to_cereal_v1
+from .importing import _import_symbols_from_json_v1, import_funcs_from_json, import_statics_from_json, import_structs_from_json
 
 from .export_types import create_types_file_json  # re-export
 from .test import run_tests  # re-export
@@ -448,24 +449,6 @@ def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
                 nice_json(f, structs_by_origin[origin], struct_schema)
 
 
-def structure_to_cereal_v1(structure: bn.StructureType, filters: SymbolFilters, _name_for_debug=None):
-    assert structure.type == bn.StructureVariant.StructStructureType
-
-    keep = lambda name, ty: filters.is_useful_struct_member(name, ty)
-    ignore = lambda name, ty: not keep(name, ty)
-    fields = _structure_fields(structure, ignore, _name_for_debug=_name_for_debug)
-
-    return [(hex(m.offset), m.name, str(m.type) if m.type is not None else None) for m in fields]
-
-def union_to_cereal_v1(structure: bn.StructureType, _name_for_debug=None):
-    assert structure.type == bn.StructureVariant.UnionStructureType
-    fields = _structure_fields(structure, ignore=lambda *args,**kw: False, _name_for_debug=_name_for_debug)
-
-    return [(m.name, str(m.type) if m.type is not None else None) for m in fields]
-
-def enum_to_cereal_v1(enumeration: bn.EnumerationType):
-    return [(m.name, m.value) for m in resolve_actual_enum_values(enumeration.members)]
-
 def split_dict(input: tp.Dict[K, V], key: tp.Callable[[K, V], G], use_defaultdict=False) -> tp.Mapping[G, tp.Dict[K, V]]:
     """ Turn a dict into a nested dict that groups the original entries according to a key function. """
     out = defaultdict(dict)
@@ -479,17 +462,15 @@ def split_dict(input: tp.Dict[K, V], key: tp.Callable[[K, V], G], use_defaultdic
 
 def import_all_functions(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, version=1, emit_status=print):
     return _import_all_symbols(
-        games=games, bndb_dir=bndb_dir, json_dir=json_dir, version=version, emit_status=print,
+        games=games, bndb_dir=bndb_dir, json_dir=json_dir, version=version, emit_status=emit_status,
         json_filename='funcs.json', symbol_type=bn.SymbolType.FunctionSymbol,
     )
 
 def import_all_statics(games=GAMES, bndb_dir=BNDB_DIR, json_dir=JSON_DIR, version=1, emit_status=print):
     return _import_all_symbols(
-        games=games, bndb_dir=bndb_dir, json_dir=json_dir, version=version, emit_status=print,
+        games=games, bndb_dir=bndb_dir, json_dir=json_dir, version=version, emit_status=emit_status,
         json_filename='statics.json', symbol_type=bn.SymbolType.DataSymbol,
     )
-
-# =================================================
 
 # NOTE: Old and not used in a while.
 #       The thought was that if people submit Pull Requests to th-re-data I should be able to merge them into
@@ -523,31 +504,7 @@ def _import_all_symbols(games, bndb_dir, json_dir, json_filename, symbol_type, v
         _update_md5s(games=[game], keys=['bndb', json_filename], bndb_dir=bndb_dir, json_dir=json_dir, version=version)
     emit_status("done")
 
-def import_funcs_from_json(bv, funcs, emit_status=None):
-    return _import_symbols_from_json_v1(bv, funcs, bn.SymbolType.FunctionSymbol, emit_status=emit_status)
-def import_statics_from_json(bv, statics, emit_status=None):
-    return _import_symbols_from_json_v1(bv, statics, bn.SymbolType.DataSymbol, emit_status=emit_status)
-
-def _import_symbols_from_json_v1(bv: bn.BinaryView, symbols, symbol_type, emit_status=None):
-    changed = False
-    for d in symbols:
-        addr = int(d['addr'], 16)
-        name = d['name']
-        existing = bv.get_symbol_at(addr)
-        if existing is not None:
-            if name == existing.name:
-                continue
-            else:
-                bv.define_user_symbol(bn.Symbol(symbol_type, addr, name))
-                changed = True
-                if emit_status:
-                    emit_status(f'rename {existing.name} => {name}')
-        else:
-            bv.define_user_symbol(bn.Symbol(symbol_type, addr, name))
-            changed = True
-            if emit_status:
-                emit_status(f'name {existing.name}')
-    return changed
+# =================================================
 
 def nice_json(file, value, schema, final_newline=True, starting_indent=0, indent=2):
     """

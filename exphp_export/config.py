@@ -52,7 +52,9 @@ class TypeOrigin(enum.Enum):
 # Impl for my own DB
 
 class ExphpSymbolFilters(SymbolFilters):
-    def as_useful_func_symbol(self, name):
+    def as_useful_func_symbol(self, name: bn.QualifiedName):
+        name = str(name)
+
         # Done by binja, e.g. 'j_sub_45a83#4'
         if '#' in name:
             return None
@@ -72,7 +74,9 @@ class ExphpSymbolFilters(SymbolFilters):
                 return None
         return name
 
-    def as_useful_static_symbol(self, name):
+    def as_useful_static_symbol(self, name: str | bn.QualifiedName):
+        name = str(name)
+
         # Skip statics that I didn't rename.
         if any(
             name.startswith(prefix) and _is_hex(name[len(prefix):])
@@ -93,7 +97,9 @@ class ExphpSymbolFilters(SymbolFilters):
 
         return name
 
-    def is_useful_struct_member(self, name: str, type: bn.Type):
+    def is_useful_struct_member(self, name: str | bn.QualifiedName, type: bn.Type):
+        name = str(name)
+
         # I use a plugin to fill extremely large gaps with char arrays to make the UI navigable.
         # These should be counted as gaps.
         is_gap_filler = bool(
@@ -102,31 +108,35 @@ class ExphpSymbolFilters(SymbolFilters):
         )
         return not is_gap_filler
 
-    def as_case_label(self, name):
+    def as_case_label(self, name: str | bn.QualifiedName):
+        name = str(name)
+
         # My naming pattern for case labels.
         for infix in ['__case_', '__cases_']:
             if infix in name:
                 table_name, rest = name.split(infix)
                 return SymbolFilters.CaseLabel(table_name=table_name, case=rest)
 
-    def classify_type_origin(self, name: str) -> TypeOrigin:
+    def classify_type_origin(self, name: str | bn.QualifiedName) -> TypeOrigin:
+        name = str(name)
+
         return TypeOrigin.OURS if name.startswith('z') else TypeOrigin.EXTERNAL
 
 class SimpleFilters(SymbolFilters):
     """ A simple set of filters that keeps all functions, statics and fields. """
-    def as_useful_func_symbol(self, name):
+    def as_useful_func_symbol(self, name: str | bn.QualifiedName):
         return name
 
-    def as_useful_static_symbol(self, name):
+    def as_useful_static_symbol(self, name: str | bn.QualifiedName):
         return name
 
-    def is_useful_struct_member(self, name: str, type: bn.Type):
+    def is_useful_struct_member(self, name: str | bn.QualifiedName, type: bn.Type):
         return True
 
-    def as_case_label(self, name):
+    def as_case_label(self, name: str | bn.QualifiedName):
         return None
 
-    def classify_type_origin(self, name):
+    def classify_type_origin(self, name: str | bn.QualifiedName):
         return TypeOrigin.OURS
 
 DEFAULT_FILTERS = ExphpSymbolFilters()

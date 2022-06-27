@@ -1,6 +1,5 @@
 from binaryninja import log
 import binaryninja as bn
-import numpy as np
 from importlib import reload as _reload
 
 # Reload all submodules before re-exporting from them.

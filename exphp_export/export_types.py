@@ -9,6 +9,26 @@ from .config import DEFAULT_FILTERS, SymbolFilters, SimpleFilters
 
 # ==============================================================================
 
+def structure_to_cereal_v1(structure: bn.StructureType, filters: SymbolFilters, _name_for_debug=None):
+    assert structure.type == bn.StructureVariant.StructStructureType
+
+    keep = lambda name, ty: filters.is_useful_struct_member(name, ty)
+    ignore = lambda name, ty: not keep(name, ty)
+    fields = _structure_fields(structure, ignore, _name_for_debug=_name_for_debug)
+
+    return [(hex(m.offset), m.name, str(m.type) if m.type is not None else None) for m in fields]
+
+def union_to_cereal_v1(structure: bn.StructureType, _name_for_debug=None):
+    assert structure.type == bn.StructureVariant.UnionStructureType
+    fields = _structure_fields(structure, ignore=lambda *args,**kw: False, _name_for_debug=_name_for_debug)
+
+    return [(m.name, str(m.type) if m.type is not None else None) for m in fields]
+
+def enum_to_cereal_v1(enumeration: bn.EnumerationType):
+    return [(m.name, m.value) for m in resolve_actual_enum_values(enumeration.members)]
+
+# ==============================================================================
+
 def create_types_file_json(
         bv: bn.BinaryView,
         types_to_export: tp.Mapping[bn.QualifiedName, bn.Type],
@@ -66,13 +86,13 @@ def structure_to_cereal(structure: bn.StructureType, ttree_converter: 'TypeToTTr
     fields_iter = _structure_fields(structure, ignore=ignore, _name_for_debug=_name_for_debug)
     output_members = []
     for d in fields_iter:
-        ty_json = None if d['type'] is None else ttree_converter.to_ttree(d['type'])
+        ty_json = None if d.type is None else ttree_converter.to_ttree(d.type)
 
         out_row: tp.Dict[str, tp.Any] = {
             bn.StructureVariant.UnionStructureType: {},
-            bn.StructureVariant.StructStructureType: {'offset': hex(d['offset'])},
+            bn.StructureVariant.StructStructureType: {'offset': hex(d.offset)},
         }[structure.type]
-        out_row.update({'name': d['name'], 'type': ty_json})
+        out_row.update({'name': d.name, 'type': ty_json})
         output_members.append(out_row)
 
     out = {'packed': structure.packed, 'members': output_members}
