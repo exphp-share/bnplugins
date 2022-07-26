@@ -191,7 +191,7 @@ def _strip_member_prefix(name, prefix):
 
 # ========================================================================
 
-def delete_range_from_struct(bv: bn.BinaryView, name, *, start=None, end=None, size=None, update_parents=True):
+def struct_delete_range(bv: bn.BinaryView, name, *, start=None, end=None, size=None, update_parents=True):
     """
     Delete a range of offsets from a struct.
 
@@ -246,7 +246,7 @@ def _delete_range_from_single_struct(bv: bn.BinaryView, name, *, start=None, end
     if rec:
         rec.enable_auto_rollback()
 
-def insert_space_in_struct(bv: bn.BinaryView, name, start, size, *, update_parents=True):
+def struct_insert_space(bv: bn.BinaryView, name, start, size, *, update_parents=True):
     """
     Insert an empty region into a struct.
 
@@ -446,6 +446,32 @@ def _get_embedded_struct_fields(bv: bn.BinaryView, struct: bn.StructureType):
         match bv.get_type_by_name(name):
             case bn.StructureType():
                 yield (member.offset, name, multiplicity)
+
+# ========================================================================
+
+def struct_rename_member(bv: bn.BinaryView, struct, old, new, *, missing_ok=False):
+    """
+    Rename a member of a struct.
+    """
+    with recording_undo(bv) as rec:
+        return _struct_rename_member(bv, struct, old, new, missing_ok, rec=rec)
+
+def _struct_rename_member(bv: bn.BinaryView, struct_name, old, new, missing_ok, rec):
+    struct = bv.get_type_by_name(struct_name)
+    if struct is None and not missing_ok:
+        raise RuntimeError(f'struct {struct_name} does not exist')
+
+    struct = struct.mutable_copy()
+    for member in struct.members:
+        if member.name == old:
+            struct.insert(member.offset, member.type, new, overwrite_existing=True)
+            bv.define_user_type(struct_name, struct)
+            rec.enable_auto_rollback()
+            return True
+    else:
+        if not missing_ok:
+            raise RuntimeError(f'struct field {struct_name}.{old} does not exist')
+        return False
 
 # ========================================================================
 

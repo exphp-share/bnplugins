@@ -7,8 +7,7 @@ from dataclasses import dataclass
 import typing as tp
 
 from touhouReverseBnutil import recording_undo, UndoRecorder, add_label, name_function, get_type_reader
-
-ECLMAP_SEARCH_DIR = r'F:\asd\clone\ecl-parse\map'
+from touhouReverseConfig import Config
 
 EX_MAP_14 = {
     0x1: 'EX_DIST',
@@ -371,7 +370,9 @@ def _read_eclmap(path):
         'vars': {},
     }
 
-    second_path = os.path.join(ECLMAP_SEARCH_DIR, path)
+    config = Config.read_system()
+
+    second_path = os.path.join(config.mapfile_dir, path)
     if not os.path.exists(path) and os.path.exists(second_path):
         path = second_path
     if not os.path.exists(path):

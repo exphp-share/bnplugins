@@ -12,7 +12,8 @@ import touhouReverseLabels as _touhouReverseLabels
 import touhouReverseStructs as _touhouReverseStructs
 import touhouReverseSearch as _touhouReverseSearch
 import touhouReverseAnalysis as _touhouReverseAnalysis
-for mod in [_touhouReverseBnutil, _touhouReverseLabels, _touhouReverseStructs, _touhouReverseSearch, _touhouReverseAnalysis]:
+import touhouReverseConfig as _touhouReverseConfig
+for mod in [_touhouReverseBnutil, _touhouReverseLabels, _touhouReverseStructs, _touhouReverseSearch, _touhouReverseAnalysis, _touhouReverseConfig]:
     _reload(mod)
 
 # These are re-exports.
@@ -23,6 +24,7 @@ from touhouReverseLabels import *  # pylint: disable=unused-wildcard-import
 from touhouReverseStructs import *  # pylint: disable=unused-wildcard-import
 from touhouReverseSearch import *  # pylint: disable=unused-wildcard-import
 from touhouReverseAnalysis import *  # pylint: disable=unused-wildcard-import
+from touhouReverseConfig import *  # pylint: disable=unused-wildcard-import
 
 def name_initialize_method_at(bv, addr): return name_method_at(bv, addr, 'initialize')
 def name_destructor_method_at(bv, addr): return name_method_at(bv, addr, 'destructor')
@@ -85,6 +87,58 @@ def name_func_called_at(bv: bn.BinaryView, addr, desired_name):
     bv.define_user_symbol(bn.Symbol(bn.SymbolType.FunctionSymbol, called_addr, desired_name))
     if jump_ins:
         name_func_called_at(bv, jump_ins, desired_name[:-len('__stub')])
+
+GamesSpec = str | list[str] | tuple[str, ...]
+
+def parse_games(game: GamesSpec):
+    if game is None:
+        return sorted(GAME_VERSIONS)
+    if isinstance((list, tuple), game):
+        return list(game)
+    if isinstance(str, game):
+        if ',' in game:
+            return list(game.split(','))
+        if ':' in game:
+            lo, hi = game.split(':', 1)
+            return [g for g in sorted(GAME_VERSIONS) if lo <= g <= hi]
+        return [game]
+    assert False, type(game)
+
+def iter_all_game_bndb_paths(games: GamesSpec):
+    config = Config.read_system()
+    for game in parse_games(games):
+        version = GAME_VERSIONS[game]
+        yield config.bndb_dir / f'{game}.{version}.bndb'
+
+def rename_type_in_all_games(old, new, games: GamesSpec = None):
+    if old.startswith('z') and new.startswith('z'):
+        old_prefix = old[1:]
+        new_prefix = new[1:]
+    else:
+        old_prefix = old
+        new_prefix = new
+
+    for bndb_path in iter_all_game_bndb_paths(games):
+        print(bndb_path)
+        with open_bv(bndb_path) as bv:
+            rename_type_in_funcs(bv, old_prefix, new_prefix)
+            if bv.get_type_by_name(old) is not None:
+                bv.rename_type(old, new)
+            bv.save_auto_snapshot()
+
+def rename_fields_in_all_games(struct_name, renames: tp.Iterable[tuple[str, str]], games: GamesSpec = None):
+    for bndb_path in iter_all_game_bndb_paths(games):
+        print(bndb_path)
+        with open_bv(bndb_path) as bv:
+            if bv.get_type_by_name(struct_name) is not None:
+                change_occurred = False
+                with recording_undo(bv) as rec:
+                    for (old, new) in renames:
+                        this_change_occurred = struct_rename_member(bv, struct_name, old, new, missing_ok=True)
+                        change_occurred = change_occurred or this_change_occurred
+
+                if change_occurred:
+                    bv.save_auto_snapshot()
 
 def rename_type_in_funcs(bv: bn.BinaryView, old, new):
     rename_func_prefix(bv, f'{old}::', f'{new}::')

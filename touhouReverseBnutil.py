@@ -55,6 +55,7 @@ def recording_undo(bv: bn.BinaryView):
         rec = _RECORDING_UNDO.rec
         try:
             yield rec
+            return
         finally:
             if _RECORDING_UNDO.rec is not rec:
                 log.log_warn('nested `recording_undo`s appear to have been closed out of order')
@@ -132,6 +133,7 @@ GAME_VERSIONS = {
     'th15': 'v1.00b',
     'th16': 'v1.00a',
     'th17': 'v1.00b',
+    'th18': 'v1.00a',
     'th095': 'v1.02a',
     'th125': 'v1.00a',
     'th128': 'v1.00a',
