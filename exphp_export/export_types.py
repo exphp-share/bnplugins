@@ -4,7 +4,7 @@ import re
 from binaryninja import log
 import binaryninja as bn
 
-from .common import TAG_KEYWORD, TypeTree, lookup_named_type_definition, window2, resolve_actual_enum_values
+from .common import ENUM_IS_BITFIELDS_NAME, ENUM_IS_BITFIELDS_VALUE, TAG_KEYWORD, TypeTree, lookup_named_type_definition, window2, resolve_actual_enum_values
 from .config import DEFAULT_FILTERS, SymbolFilters, SimpleFilters
 
 # ==============================================================================
@@ -26,6 +26,12 @@ def union_to_cereal_v1(structure: bn.StructureType, _name_for_debug=None):
 
 def enum_to_cereal_v1(enumeration: bn.EnumerationType):
     return [(m.name, m.value) for m in resolve_actual_enum_values(enumeration.members)]
+
+def enum_to_bitfields_cereal_v1(enumeration: bn.EnumerationType, _name_for_debug=None):
+    return [
+        (m.start, 'ui'[m.signed] + str(m.size) if m.signed is not None else None, m.name)
+        for m in _enum_bitfields(enumeration, _name_for_debug=_name_for_debug)
+    ]
 
 # ==============================================================================
 
@@ -58,6 +64,8 @@ def _create_types_file_json(
             cereal.update(structure_to_cereal(ty, ttree_converter, _name_for_debug=type_name, filters=filters))
         elif classification == 'enum':
             cereal.update(enum_to_cereal(ty))
+        elif classification == 'bitfields':
+            cereal.update(enum_to_bitfields_cereal(ty))
         elif classification == 'typedef':
             cereal['type'] = ttree_converter.to_ttree(expanded_ty)
 
@@ -158,6 +166,97 @@ def _structure_fields(
     if structure.type == bn.StructureVariant.StructStructureType:
         # Also put an end marker in the output because it's useful to downstream code
         yield end_marker
+
+# ==============================================================================
+
+def enum_to_bitfields_cereal(enum: bn.EnumerationType, _name_for_debug=None):
+    return {
+        'members': [
+            {
+                'start': d.start,
+                'name': d.name,
+                'signed': d.signed,
+            } for d in _enum_bitfields(enum, _name_for_debug=_name_for_debug)
+        ],
+    }
+
+class EnumBitfield(tp.NamedTuple):
+    start: int
+    size: int
+    name: str
+    signed: tp.Optional[bool]
+
+    def name_in_binja(self):
+        if self.signed is None:
+            return self.name
+        sign_char = 'I' if self.signed else 'U'
+        return f'__{sign_char}_{self.name}'
+
+    def value_in_binja(self):
+        return int('1' * self.size + '0' * self.start, 2)
+
+def _enum_member_to_bitfield(member: bn.EnumerationMember):
+    start, size = __extract_bitfield_info_from_enum_value(member.value)
+    signed, name = __extract_bitfield_info_from_enum_name(member.name)
+    return EnumBitfield(start=start, size=size, name=name, signed=signed)
+
+def __extract_bitfield_info_from_enum_value(x: int):
+    # this doesn't work with signed because we'd have to know the backing type width.
+    # (it also isn't designed to work on 0, which has a degenerate start position)
+    assert x > 0
+    bits = bin(x)[2:]
+    bitsNo0 = bits.rstrip('0')
+    bitsNo0No1 = bitsNo0.rstrip('1')
+    assert bitsNo0No1 == '', f'{bin(x)} has nonconsecutive 1 bits'
+
+    start = len(bits) - len(bitsNo0)
+    size = len(bitsNo0)
+    return start, size
+
+def __extract_bitfield_info_from_enum_name(s: str):
+    assert s.startswith('__')
+    s = s[2:]
+    assert s[0] in 'UI'
+    assert s[1] == '_'
+    signed = s[0] == 'I'
+    name = s[2:]
+    return signed, name
+
+def _enum_bitfields(
+    enum: bn.EnumerationType,
+    _name_for_debug=None,
+):
+    members = list(resolve_actual_enum_values(enum.members))
+
+    # first member is the bitfield marker, ignore it
+    assert members[0].name == ENUM_IS_BITFIELDS_NAME
+    assert members[0].value == ENUM_IS_BITFIELDS_VALUE
+    members = enum.members[1:]
+
+    # A fake field at the max offset which helps simplify some things
+    end_marker = EnumBitfield(start=8 * enum.width, size=1, name=END_MEMBER_NAME, signed=None)
+
+    effective_members = [_enum_member_to_bitfield(m) for m in members]
+    effective_members.append(end_marker)
+
+    # Edge case: First thing not at offset zero (or no members)
+    if effective_members[0].start != 0:
+        yield EnumBitfield(start=0, size=effective_members[0].start, name=GAP_MEMBER_NAME, signed=None)
+
+    for field, next_field in window2(effective_members):
+        yield field
+
+        assert field.signed is not None  # in effective_members, only the end marker has None sign
+        field_end = field.start + field.size
+        gap_size = next_field.start - field_end
+        assert gap_size > 0, f"misordered bitfields in {_name_for_debug} at {field.name}"
+        if gap_size:
+            yield EnumBitfield(start=field_end, size=gap_size, name=GAP_MEMBER_NAME, signed=None)
+
+    # Also put an end marker in the output because it's useful to downstream code
+    yield end_marker
+
+# ==============================================================================
 
 TTREE_VALID_ABBREV_REGEX = re.compile(r'^[_\$#:a-zA-Z][_\$#:a-zA-Z0-9]*$')
 

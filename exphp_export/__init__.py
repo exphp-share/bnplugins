@@ -18,11 +18,13 @@ from pathlib import Path
 
 from .common import TypeTree, TAG_KEYWORD, PathLike, lookup_named_type_definition, resolve_actual_enum_values
 from .config import SymbolFilters, DEFAULT_FILTERS, TypeOrigin
-from .export_types import _create_types_file_json, TypeToTTreeConverter, structure_to_cereal_v1, enum_to_cereal_v1, union_to_cereal_v1
-from .importing import _import_symbols_from_json_v1, import_funcs_from_json, import_statics_from_json, import_structs_from_json
+from .export_types import _create_types_file_json, TypeToTTreeConverter, structure_to_cereal_v1, enum_to_cereal_v1, union_to_cereal_v1, enum_to_bitfields_cereal_v1
+from .importing import _import_symbols_from_json_v1
 
-from .export_types import create_types_file_json  # re-export
-from .test import run_tests  # re-export
+# re-exports
+from .importing import import_funcs_from_json, import_statics_from_json, import_structs_from_json, import_bitfields_from_json
+from .export_types import create_types_file_json
+from .test import run_tests
 
 BNDB_DIR = r"E:\Downloaded Software\Touhou Project"
 JSON_DIR = r"F:\asd\clone\th16re-data\data"
@@ -371,6 +373,10 @@ def _export_types_from_dict(
                     '@type': 'block-object',
                     'members': {'@type': 'block-array'}
                 },
+                'bitfields': {
+                    '@type': 'block-object',
+                    'members': {'@type': 'block-array'}
+                },
                 'typedef': {
                     '@type': 'inline',
                 },
@@ -399,6 +405,7 @@ def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
     unions = {}
     structs = {}
     typedefs = {}
+    bitfields = {}
     for type_name, ty in bv.types.items():
         type_name = str(type_name)
 
@@ -409,6 +416,8 @@ def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
             unions[type_name] = union_to_cereal_v1(ty, _name_for_debug=type_name)
         elif classification == 'enum':
             enums[type_name] = enum_to_cereal_v1(ty)
+        elif classification == 'bitfields':
+            bitfields[type_name] = enum_to_bitfields_cereal_v1(ty)
         elif classification == 'typedef':
             typedef_target = extra_payload
             typedefs[type_name] = {'def': str(typedef_target), 'size': typedef_target.width}
@@ -417,6 +426,13 @@ def _export_types_v1(bv: bn.BinaryView, path: Path, filters: SymbolFilters):
 
     with open_output_json_with_validation(path / 'type-enums.json') as f:
         nice_json(f, enums, {
+            '@type': 'block-mapping',
+            '@line-sep': 1,
+            'element': {'@type': 'block-array'},
+        })
+
+    with open_output_json_with_validation(path / 'type-bitfields.json') as f:
+        nice_json(f, bitfields, {
             '@type': 'block-mapping',
             '@line-sep': 1,
             'element': {'@type': 'block-array'},
@@ -556,6 +572,8 @@ class _NiceJsonContext:
             variant_name = value[tag]
             sub_schema = schema.get(variant_name)
             if not sub_schema:
+                if '@default' not in schema:
+                    assert False, f'object variant schema missing schema for {repr(sub_schema)}'
                 sub_schema = schema['@default']
             self.format_value(value, schema[variant_name], indent=indent)
 
@@ -579,8 +597,26 @@ class _NiceJsonContext:
 
 def all_md5_keys(version: JsonFormatVersion):
     return {
-        1: ['bndb', 'funcs.json', 'labels.json', 'statics.json', 'type-structs-own.json'],
-        2: ['bndb', 'funcs.json', 'labels.json', 'statics.json', 'types-own.json'],
+        1: [
+            'bndb',
+            'funcs.json',
+            'labels.json',
+            'statics.json',
+            'type-structs-own.json',
+            'type-structs-ext.json',
+            'type-aliases.json',
+            'type-bitfields.json',
+            'type-enums.json',
+            'type-unions.json',
+        ],
+        2: [
+            'bndb',
+            'funcs.json',
+            'labels.json',
+            'statics.json',
+            'types-own.json',
+            'types-ext.json',
+        ],
     }[version]
 
 def _read_md5s_file(json_dir=JSON_DIR):

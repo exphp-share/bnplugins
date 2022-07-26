@@ -1,9 +1,10 @@
 import binaryninja as bn
+from exphp_export.common import ENUM_IS_BITFIELDS_NAME, ENUM_IS_BITFIELDS_VALUE, window2
 
 from touhouReverseBnutil import recording_undo, UndoRecorder
 
 from .config import DEFAULT_FILTERS
-from .export_types import structure_to_cereal_v1
+from .export_types import EnumBitfield, structure_to_cereal_v1, enum_to_bitfields_cereal_v1
 
 def import_funcs_from_json(bv, funcs: list, emit_status=print):
     """ Import funcs from JSON written in the V1 format. """
@@ -90,12 +91,12 @@ def _import_struct_from_json_v1(bv: bn.BinaryView, name: str, members: list, rec
             return False
 
         if emit_status:
-            _report_changes_to_struct(name, existing_members, members, emit_status=emit_status)
+            get_offset = lambda item: item[0]
+            _report_changes_to_struct(name, existing_members, members, get_offset=get_offset, emit_status=emit_status)
 
     bv.define_user_type(name, new_type)
     rec.enable_auto_rollback()
     return True
-
 
 def _structure_from_cereal_v1(bv: bn.BinaryView, members: list) -> bn.StructureType:
     builder = bn.StructureBuilder.create()
@@ -109,14 +110,76 @@ def _structure_from_cereal_v1(bv: bn.BinaryView, members: list) -> bn.StructureT
                 builder.width = offset
             case [name, type_str]:
                 assert isinstance(name, str), f"field name should be str, not {type(name)}!"
-                assert isinstance(type_str, str), f"field {type_str} should be str, not {type(type_str)}!"
+                assert isinstance(type_str, str), f"field type should be str, not {type(type_str)}!"
                 ty, _ = bv.parse_type_string(type_str)
                 builder.insert(offset, ty, name)
 
     return builder.immutable_copy()
 
 
-def _diff_two_struct_jsons_v1(a_members: list, b_members: list):
+def import_bitfields_from_json(bv: bn.BinaryView, bitfields: dict, emit_status=print):
+    """ Import bitfields from JSON written in the V1 format. """
+    return _import_all_bitfields_from_json_v1(bv, bitfields, emit_status=emit_status)
+
+def _import_all_bitfields_from_json_v1(bv: bn.BinaryView, bitfields: dict, emit_status=None):
+    """ Import bitfields from JSON written in the V1 format. """
+    changed = False
+    with recording_undo(bv) as rec:
+        for name, members in bitfields.items():
+            changed = changed | _import_bitfields_from_json_v1(bv, name, members, rec=rec, emit_status=emit_status)
+        return changed
+
+def _import_bitfields_from_json_v1(bv: bn.BinaryView, name: str, members: list, rec: UndoRecorder, emit_status):
+    new_type = _bitfields_from_cereal_v1(bv, members)
+
+    existing_type = bv.get_type_by_name(name)
+    if existing_type is not None:
+        if not isinstance(existing_type, bn.EnumerationType):
+            raise RuntimeError(f'Type {name} already exists but is not an enum!')
+
+        existing_members = enum_to_bitfields_cereal_v1(existing_type, _name_for_debug=name)
+        if existing_members == members:
+            return False
+
+        if emit_status:
+            get_offset = lambda item: item[0]
+            _report_changes_to_struct(name, existing_members, members, get_offset=get_offset, emit_status=emit_status)
+
+    bv.define_user_type(name, new_type)
+    rec.enable_auto_rollback()
+    return True
+
+def _bitfields_from_cereal_v1(bv: bn.BinaryView, members: list) -> bn.EnumerationType:
+    assert members[-1][2] == '__end'
+    assert members[-1][0] % 8 == 0
+    width = members[-1][0] // 8
+
+    builder = bn.EnumerationBuilder.create(width=width)
+    builder.append(ENUM_IS_BITFIELDS_NAME, ENUM_IS_BITFIELDS_VALUE)
+    for (offset, sign_str, name), (next_offset, _, _) in window2(members):
+        match [name, sign_str]:
+            case ["__unknown", None]:
+                pass
+            case ["__end", None]:
+                pass
+            case [name, sign_str]:
+                assert isinstance(name, str), f"bitfield name should be str, not {type(name)}!"
+                assert isinstance(sign_str, str), f"bitfield sign should be str, not {type(sign_str)}!"
+                assert sign_str[0] in 'iu', f"bitfield sign should be 'i' or 'u', not {repr(sign_str)}"
+                signed = sign_str[0] == 'i'
+                size = next_offset - offset
+
+                # sign str may be 'i' (for ease of writing definitions), or 'i6' (what we export)
+                if len(sign_str) > 1:
+                    assert int(sign_str[1:]) == size, f"mismatched size for field {repr(name)}"
+
+                bf = EnumBitfield(start=offset, size=next_offset-offset, signed=signed, name=name)
+                builder.append(bf.name_in_binja(), bf.value_in_binja())
+
+    return builder.immutable_copy()
+
+
+def _diff_two_struct_jsons_v1(a_members: list, b_members: list, get_offset):
     # We need peekable iteration so we can choose which one to advance.
     # That's hard to do with iterators in python so we use indices.
     a_index = 0
@@ -148,15 +211,12 @@ def _diff_two_struct_jsons_v1(a_members: list, b_members: list):
             yield from handle_addition()
             continue
 
-        a_offset, a_name, a_type_str = a_members[a_index]
-        a_offset = int(a_offset, 16)
-
-        b_offset, b_name, b_type_str = b_members[b_index]
-        b_offset = int(b_offset, 16)
+        a_offset = get_offset(a_members[a_index])
+        b_offset = get_offset(b_members[b_index])
 
         # unchanged members
         if a_members[a_index] == b_members[b_index]:
-            yield from handle_identical()
+            handle_identical()
             continue
 
         if a_offset <= b_offset:
@@ -166,6 +226,6 @@ def _diff_two_struct_jsons_v1(a_members: list, b_members: list):
             yield from handle_addition()
             continue
 
-def _report_changes_to_struct(struct_name: str, a_members: list, b_members: list, emit_status):
-    for diffchar, member in _diff_two_struct_jsons_v1(a_members, b_members):
+def _report_changes_to_struct(struct_name: str, a_members: list, b_members: list, get_offset, emit_status):
+    for diffchar, member in _diff_two_struct_jsons_v1(a_members, b_members, get_offset):
         emit_status(f'struct {struct_name}: {diffchar} {member}')

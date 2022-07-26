@@ -8,6 +8,9 @@ TypeTree = tp.Dict
 PathLike = tp.Union[str, os.PathLike]
 T = tp.TypeVar('T')
 
+ENUM_IS_BITFIELDS_NAME = '__IS_BITFIELD'
+ENUM_IS_BITFIELDS_VALUE = 0
+
 def lookup_named_type_definition(bv: bn.BinaryView, name: bn.QualifiedName) -> tp.Tuple[str, tp.Optional[bn.Type]]:
     """
     Look up a named type, while dealing with all of binary ninja's typedef oddities.
@@ -27,7 +30,10 @@ def lookup_named_type_definition(bv: bn.BinaryView, name: bn.QualifiedName) -> t
         # Binja wouldn't have auto-expanded a typedef referring to a struct or enum,
         # so in these cases we can be sure that 'name' refers to the struct/enum itself.
         case bn.EnumerationType():
-            return ('enum', None)
+            if ty.members[0].name == ENUM_IS_BITFIELDS_NAME and ty.members[0].value == ENUM_IS_BITFIELDS_VALUE:
+                return ('bitfields', None)
+            else:
+                return ('enum', None)
         case bn.StructureType():
             return ({
                 bn.StructureVariant.StructStructureType: 'struct',
