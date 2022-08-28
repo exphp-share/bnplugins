@@ -25,8 +25,8 @@ def _import_symbols_from_json_v1(bv: bn.BinaryView, symbols: list, symbol_type: 
 
         existing_symbol = bv.get_symbol_at(addr)
         existing_data_var = bv.get_data_var_at(addr)
-        existing_name = existing_symbol.name
         if existing_symbol is not None:
+            existing_name = existing_symbol.name
             if name == existing_name:
                 if any([
                     existing_data_var is None and ty is None,
