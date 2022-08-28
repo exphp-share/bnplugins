@@ -1,3 +1,4 @@
+import re
 from binaryninja import log
 import binaryninja as bn
 from touhouReverseBnutil import recording_undo, add_label, get_type_reader, open_th_bv
@@ -35,40 +36,43 @@ def import_type_from_bv(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, name, exi
     if src_type.type_class == bn.TypeClass.EnumerationTypeClass:
         raise RuntimeError(f'cannot import {name}: enum import not yet implemented')
     elif src_type.type_class == bn.TypeClass.StructureTypeClass:
-        dest_structure = bn.StructureBuilder.create()
-        dest_structure.packed = src_type.packed
-
-        # first add a dummy type in case it has pointers to itself (or pointers to things that point to it, etc.)
-        dest_bv.define_user_type(name, dest_structure.immutable_copy())
-        if rec:
-            rec.enable_auto_rollback()
-
-        offset_delta = 0
-        for member in src_type.members:
-            src_member_type = member.type
-
-            err_loc = f'member {member.name} of {name}'
-            dest_member_type = _lookup_or_import_type(dest_bv, src_bv, src_member_type, rec=rec, err_loc=err_loc)
-            if dest_member_type is None:
-                raise RuntimeError(f'missing member type')
-            dest_structure.insert(member.offset + offset_delta, dest_member_type, member.name)
-            # if the destination BV had a pre-existing definition for a member's type and it is a different size from the source BV,
-            # adjust future offsets accordingly.  This is for the case in version tracking where a struct gets a new member,
-            # but many larger structs containing this struct are otherwise unchanged.
-            offset_delta += dest_member_type.width - src_member_type.width
-
-        dest_final_width = src_type.width + offset_delta
-        assert dest_structure.width <= dest_final_width, ('{:x}'.format(dest_structure.width), '{:x}'.format(dest_final_width), '{:x}'.format(offset_delta))
-        # (it is important to do this conditionally; 'width' is a property, and if it is already equal to dest_final_width
-        #  then performing this assignment will chop off any zero-width members at the end of the struct)
-        if dest_structure.width < dest_final_width:
-            dest_structure.width = dest_final_width
-
-        dest_bv.define_user_type(name, dest_structure)
-        log.log_warn(f'Imported type {name}')
-        return get_named_type_reference(dest_bv, name)
+        return _import_structure_type_from_bv(dest_bv, src_bv, name, src_type, rec=rec)
     else:
         raise RuntimeError(f'type {name} cannot be imported from source bv ({repr(src_type.type_class)})')
+
+def _import_structure_type_from_bv(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, name, src_type: bn.StructureType, rec=None):
+    dest_structure = bn.StructureBuilder.create()
+    dest_structure.packed = src_type.packed
+
+    # first add a dummy type in case it has pointers to itself (or pointers to things that point to it, etc.)
+    dest_bv.define_user_type(name, dest_structure.immutable_copy())
+    if rec:
+        rec.enable_auto_rollback()
+
+    offset_delta = 0
+    for member in src_type.members:
+        src_member_type = member.type
+
+        err_loc = f'member {member.name} of {name}'
+        dest_member_type = _lookup_or_import_type(dest_bv, src_bv, src_member_type, rec=rec, err_loc=err_loc)
+        if dest_member_type is None:
+            raise RuntimeError(f'missing member type')
+        dest_structure.insert(member.offset + offset_delta, dest_member_type, member.name)
+        # if the destination BV had a pre-existing definition for a member's type and it is a different size from the source BV,
+        # adjust future offsets accordingly.  This is for the case in version tracking where a struct gets a new member,
+        # but many larger structs containing this struct are otherwise unchanged.
+        offset_delta += dest_member_type.width - src_member_type.width
+
+    dest_final_width = src_type.width + offset_delta
+    assert dest_structure.width <= dest_final_width, ('{:x}'.format(dest_structure.width), '{:x}'.format(dest_final_width), '{:x}'.format(offset_delta))
+    # (it is important to do this conditionally; 'width' is a property, and if it is already equal to dest_final_width
+    #  then performing this assignment will chop off any zero-width members at the end of the struct)
+    if dest_structure.width < dest_final_width:
+        dest_structure.width = dest_final_width
+
+    dest_bv.define_user_type(name, dest_structure)
+    log.log_warn(f'Imported type {name}')
+    return get_named_type_reference(dest_bv, name)
 
 def _lookup_or_import_type(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, src_type: bn.Type, rec=None, err_loc='<unknown>'):
     src_type_name = None
@@ -113,6 +117,22 @@ def _lookup_or_import_type(dest_bv: bn.BinaryView, src_bv: bn.BinaryView, src_ty
 
     else:
         raise RuntimeError(f"don't know how to locally resolve {src_type}! {klass}")
+
+_LIKELY_STATIC_ADDRESS_RE = re.compile(r'0x[45][0-9a-fA-F]{5}($|[^0-9a-fA-F])')
+def _dont_import_member(member: bn.StructureMember):
+    if _type_is_comment(member.type):
+        if member.name == '__exact_size_known':
+            return True
+        if _LIKELY_STATIC_ADDRESS_RE.match(member.name):
+            return True
+    return False
+
+def _type_is_comment(type: bn.Type):
+    if isinstance(type, bn.ArrayType):
+        element = type.element_type
+        if isinstance(element, bn.NamedTypeReferenceType):
+            return element.name == 'zCOMMENT'
+    return False
 
 # bv.get_type_by_name() returns a type that, if you try to use it as a member type, it will
 # create a nested anonymous type. We actually want a NamedTypeReference. :/

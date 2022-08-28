@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import typing as tp
 
 from touhouReverseBnutil import recording_undo, UndoRecorder, add_label, name_function, get_type_reader
+from touhouReverseBnutil import get_game_and_version, Game
 from touhouReverseConfig import Config
 
 EX_MAP_14 = {
@@ -301,18 +302,18 @@ def add_ecl_labels(bv: bn.BinaryView, addr, ins_offset, label_prefix, eclmap_pat
 
     jumptable, jumptable_last_address = read_accessed_jumptable(bv, addr)
     jumptable = {k+ins_offset:v for (k,v) in jumptable.items()}
-    eclmap = _read_eclmap(eclmap_path) if eclmap_path is not None else None
+    eclmap = _read_mapfile(eclmap_path, bv) if eclmap_path is not None else None
 
     if label_prefix[-4:] in ['ival', 'fval', 'iptr', 'fptr']:
         comment_prefix = 'var'
-        mapping = eclmap['vars'] if eclmap else {}
+        mapping = eclmap.vars if eclmap else {}
         num_formatter = lambda x: str(abs(x))
     else:
         comment_prefix = 'ins'
-        mapping = eclmap['ins'] if eclmap else {}
+        mapping = eclmap.ins if eclmap else {}
         num_formatter = str  # FIXME why not always do str(abs(x))? I forgot.
 
-    nums_by_address = {}
+    nums_by_address: dict[int, list[int]] = {}
     for num, address in jumptable.items():
         if address not in nums_by_address:
             nums_by_address[address] = []
@@ -364,14 +365,9 @@ def add_ecl_labels(bv: bn.BinaryView, addr, ins_offset, label_prefix, eclmap_pat
             bv.set_comment_at(address, comment)
             rec.enable_auto_rollback()
 
-def _read_eclmap(path):
-    out = {
-        'ins': {},
-        'vars': {},
-    }
-
+def _read_mapfile(path, bv: tp.Optional[bn.BinaryView] = None):
+    # allow path to be relative either to current dir or configured mapfile_dir
     config = Config.read_system()
-
     second_path = os.path.join(config.mapfile_dir, path)
     if not os.path.exists(path) and os.path.exists(second_path):
         path = second_path
@@ -379,25 +375,74 @@ def _read_eclmap(path):
         raise FileNotFoundError(path)
 
     with open(path) as f:
-        for line in f:
-            if '#' in line:
-                line = line[:line.index('#')]
-            line = line.strip()
-            if not line:
-                continue
+        magic, lines = _extract_magic_and_clean_mapfile_lines(f)
+
+    if magic == '!gamemap':
+        if not bv:
+            raise RuntimeError('bv required for gamemap!')
+        game_and_ver = get_game_and_version(bv)
+        if not game_and_ver:
+            raise RuntimeError('cannot determine game for gamemap lookup!')
+        return _read_gamemap(path, game_and_ver[0], lines)
+    else:
+        mapfile = Mapfile()
+        mapfile.update_from_mapfile_lines(lines)
+        return mapfile
+
+def _read_gamemap(path, game: Game, lines: list[str]):
+    mapfile = Mapfile()
+    game_found = False
+    for line in lines:
+        if line.startswith('!'):
+            mode = line[1:]
+            continue
+        if mode == 'game_files':
+            line_game_num_str, line_filename = line.split()
+            line_game = Game(int(line_game_num_str))
+
+            if line_game == game:
+                game_found = True
+                eclmap_path = os.path.join(os.path.dirname(path), line_filename)
+                with open(eclmap_path) as f:
+                    inner_magic, inner_lines = _extract_magic_and_clean_mapfile_lines(f)
+                    assert inner_magic.startswith('!')
+                    assert inner_magic != '!gamemap'
+                    mapfile.update_from_mapfile_lines(inner_lines)
+
+    if not game_found:
+        log.log_warn(f'{path} has no entry for {game}')
+
+    return mapfile
+
+def _extract_magic_and_clean_mapfile_lines(lines: tp.Iterable[str]) -> tuple[str, list[str]]:
+    lines = iter(lines)
+    magic = next(lines).strip()
+    assert magic.startswith('!')
+
+    lines = [(line[:line.index('#')] if '#' in line else line) for line in lines]
+    lines = [line.strip() for line in lines]
+    lines = [line for line in lines if line]
+    return magic, lines
+
+class Mapfile:
+    ins: dict[int, str]
+    vars: dict[int, str]
+
+    def __init__(self):
+        self.ins = {}
+        self.vars = {}
+
+    def update_from_mapfile_lines(self, lines: list[str]):
+        for line in lines:
             if line.startswith('!'):
                 mode = line[1:]
                 continue
             if mode == 'ins_names':
                 words = line.split()
-                out['ins'][int(words[0])] = words[1]
+                self.ins[int(words[0])] = words[1]
             if mode == 'gvar_names':
                 words = line.split()
-                out['vars'][int(words[0])] = words[1]
-
-    # assert out['ins'], 'no instructions'
-    # assert out['vars'], 'no vars'
-    return out
+                self.vars[int(words[0])] = words[1]
 
 def read_accessed_jumptable(bv: bn.BinaryView, addr):
     """

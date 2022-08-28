@@ -50,6 +50,8 @@ GAMES = [
     "th165.v1.00a",
     "th17.v1.00b",
     "th18.v1.00a",
+    "th185.v1.00a",
+    # NEWHU: 185
 ]
 JsonFormatVersion = int  # tp.Literal[1, 2]  # needs python 3.8
 

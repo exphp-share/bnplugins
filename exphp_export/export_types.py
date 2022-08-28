@@ -249,7 +249,7 @@ def _enum_bitfields(
         assert field.signed is not None  # in effective_members, only the end marker has None sign
         field_end = field.start + field.size
         gap_size = next_field.start - field_end
-        assert gap_size > 0, f"misordered bitfields in {_name_for_debug} at {field.name}"
+        assert gap_size >= 0, f"misordered bitfields in {_name_for_debug} at {field.name}"
         if gap_size:
             yield EnumBitfield(start=field_end, size=gap_size, name=GAP_MEMBER_NAME, signed=None)
 

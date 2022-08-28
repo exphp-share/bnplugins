@@ -120,41 +120,108 @@ def open_bv(path, **kw):
     # Note: This is now a context manager, hurrah!
     return bn.BinaryViewType.get_view_of_file(path, **kw)
 
-GAME_VERSIONS = {
-    'th06': 'v1.02h',
-    'th07': 'v1.00b',
-    'th08': 'v1.00d',
-    'th09': 'v1.50a',
-    'th10': 'v1.00a',
-    'th11': 'v1.00a',
-    'th12': 'v1.00b',
-    'th13': 'v1.00c',
-    'th14': 'v1.00b',
-    'th15': 'v1.00b',
-    'th16': 'v1.00a',
-    'th17': 'v1.00b',
-    'th18': 'v1.00a',
-    'th095': 'v1.02a',
-    'th125': 'v1.00a',
-    'th128': 'v1.00a',
-    'th143': 'v1.00a',
-    'th165': 'v1.00a',
-}
+class Game:
+    thname: str
+    num: int
 
-def open_th_bv(bv: bn.BinaryView, source, update_analysis=False, **kw):
+    def __new__(cls, arg: 'Game | int | str'):
+        return cls._lookup(arg)
+
+    @classmethod
+    def _lookup(cls, arg: 'Game | int | str'):
+        if isinstance(arg, Game): return arg
+        if isinstance(arg, int): return GAME_NUM_TO_GAME[arg]
+        if isinstance(arg, str): return GAME_THNAME_TO_GAME[arg]
+        raise TypeError(f'cannot convert {type(arg)} to Game')
+
+    @classmethod
+    def _create(cls, thname: str, num: int):
+        obj = object.__new__(cls)
+        obj.thname = thname
+        obj.num = num
+        return obj
+
+    @classmethod
+    def parse(cls, s: str):
+        if all(ord(c) in range(ord('0'), ord('9')+1) for c in s):
+            # numeric
+            if s[0] > '4':
+                s = '0' + s
+            thname = 'th' + s
+        elif s == 'alcostg':
+            thname = 'th103'
+        else:
+            thname = s
+        return GAME_THNAME_TO_GAME[thname]
+
+    def __repr__(self): return f'Game({self.num})'
+    def __str__(self): return self.thname
+    def __hash__(self): return self.thname.__hash__()
+    def __int__(self): return self.num
+    def __eq__(self, other): return self.thname == Game._lookup(other).thname
+    def __ne__(self, other): return self.thname != Game._lookup(other).thname
+    def __lt__(self, other): return self.thname < Game._lookup(other).thname
+    def __gt__(self, other): return self.thname > Game._lookup(other).thname
+    def __le__(self, other): return self.thname <= Game._lookup(other).thname
+    def __ge__(self, other): return self.thname >= Game._lookup(other).thname
+
+Version = str
+GAME_VERSIONS: tp.Dict[Game, Version] = {
+    Game._create(thname='th06', num=6): 'v1.02h',
+    Game._create(thname='th07', num=7): 'v1.00b',
+    Game._create(thname='th08', num=8): 'v1.00d',
+    Game._create(thname='th09', num=9): 'v1.50a',
+    Game._create(thname='th095', num=95): 'v1.00a',
+    Game._create(thname='th10', num=10): 'v1.00a',
+    Game._create(thname='th103', num=103): 'v1.00a',
+    Game._create(thname='th11', num=11): 'v1.00b',
+    Game._create(thname='th12', num=12): 'v1.00c',
+    Game._create(thname='th125', num=125): 'v1.00b',
+    Game._create(thname='th128', num=128): 'v1.00b',
+    Game._create(thname='th13', num=13): 'v1.00a',
+    Game._create(thname='th14', num=14): 'v1.00b',
+    Game._create(thname='th143', num=143): 'v1.00a',
+    Game._create(thname='th15', num=15): 'v1.02a',
+    Game._create(thname='th16', num=16): 'v1.00a',
+    Game._create(thname='th165', num=165): 'v1.00a',
+    Game._create(thname='th17', num=17): 'v1.00a',
+    Game._create(thname='th18', num=18): 'v1.00a',
+    Game._create(thname='th185', num=185): 'v1.00a',
+    # NEWHU: 185
+}
+ALL_GAMES = sorted(GAME_VERSIONS)
+GAME_NUM_TO_GAME = {game.num: game for game in ALL_GAMES}
+GAME_THNAME_TO_GAME = {game.thname: game for game in ALL_GAMES}
+
+def open_th_bv(bv: bn.BinaryView, source: str, update_analysis=False, **kw):
     """ Open a touhou bndb.  Another touhou bv is used to get a search directory.
 
     This is a context manager. (usable in `with`) """
 
     if os.sep not in source and '/' not in source:
         if source.startswith('th') and 'v' not in source:
-            source += '.' + GAME_VERSIONS[source]
+            source += '.' + GAME_VERSIONS[Game(source)]
         source = os.path.join(os.path.dirname(bv.file.filename), source)
 
     if not source.lower().endswith('.bndb'):
         source += '.bndb'
 
     return bn.BinaryViewType.get_view_of_file(source, update_analysis=update_analysis, **kw)
+
+def get_game_and_version(bv: bn.BinaryView) -> tp.Optional[tp.Tuple[Game, Version]]:
+    filename = os.path.basename(bv.file.filename)
+    if not filename.endswith('.bndb'):
+        return None
+
+    stem = filename[:-len('.bndb')]
+    for game_obj in ALL_GAMES:
+        game = str(game_obj)
+        if stem.startswith(game):
+            if stem[len(game)] != '.':
+                continue
+            version = stem[len(game) + 1:]
+            return game_obj, version
+    return None
 
 # ========================================================================
 

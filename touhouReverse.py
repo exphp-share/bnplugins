@@ -88,21 +88,27 @@ def name_func_called_at(bv: bn.BinaryView, addr, desired_name):
     if jump_ins:
         name_func_called_at(bv, jump_ins, desired_name[:-len('__stub')])
 
-GamesSpec = str | list[str] | tuple[str, ...]
+ConvertableToGame = str | int | Game
+GamesSpec = str | ConvertableToGame | list[ConvertableToGame] | tuple[ConvertableToGame, ...] | None
 
-def parse_games(game: GamesSpec):
+def parse_games(game: GamesSpec) -> list[Game]:
     if game is None:
-        return sorted(GAME_VERSIONS)
-    if isinstance((list, tuple), game):
-        return list(game)
-    if isinstance(str, game):
+        return ALL_GAMES
+
+    if isinstance(game, (list, tuple)):
+        return list(map(Game, game))
+
+    if isinstance(game, str):
         if ',' in game:
-            return list(game.split(','))
+            return list(map(Game, game.split(',')))
         if ':' in game:
-            lo, hi = game.split(':', 1)
-            return [g for g in sorted(GAME_VERSIONS) if lo <= g <= hi]
-        return [game]
-    assert False, type(game)
+            lo, hi = map(Game, game.split(':', 1))
+            return [g for g in ALL_GAMES if lo <= g <= hi]
+
+    if isinstance(game, (str, int, Game)):
+        return [Game(game)]
+
+    raise TypeError(f'cannot interpret {type(game)} as game spec')
 
 def iter_all_game_bndb_paths(games: GamesSpec):
     config = Config.read_system()
@@ -207,13 +213,12 @@ bn.PluginCommand.register_for_address('Name on_registration method', 'Name on_re
 
 # ========================================================================
 
-repack_name = 'zAnmManager'
-
-def repack_anm_fields(bv: bn.BinaryView, addr):
-    struct = bv.types[repack_name]
+def fill_large_gaps(bv: bn.BinaryView, type_name: str, min_filler_size=0x40, keep=0x20, align=0x10):
+    struct = bv.get_type_by_name(type_name)
     assert isinstance(struct, bn.StructureType)
     struct = struct.mutable_copy()
 
+    # remove existing fillers
     remove_indices = [
         index for (index, field) in enumerate(struct.members)
         if isinstance(field.type, bn.ArrayType)
@@ -225,7 +230,6 @@ def repack_anm_fields(bv: bn.BinaryView, addr):
 
     unknown_ranges = [range(struct.width)]
     for member in struct.members:
-        log.log_error(str(unknown_ranges))
         last_range = unknown_ranges.pop()
         before = range(last_range.start, member.offset)
         after = range(member.offset + member.type.width, last_range.stop)
@@ -236,11 +240,24 @@ def repack_anm_fields(bv: bn.BinaryView, addr):
             unknown_ranges.append(after)
 
     for i, r in enumerate(unknown_ranges):
-        struct.insert(r.start, bn.Type.array(bn.Type.char(), len(r)), f'__filler_{i:02}')
+        start = r.start + keep
+        stop = r.stop - keep
+        if start % align != 0:
+            start += align - (start % align)
+        if stop % align != 0:
+            stop -= stop % align
+        if stop - start > min_filler_size:
+            struct.insert(start, bn.Type.array(bn.Type.char(), stop - start), f'__filler_{i:02}')
 
-    bv.define_user_type(repack_name, struct)
+    with recording_undo(bv) as rec:
+        bv.define_user_type(type_name, struct)
+        rec.enable_auto_rollback()
 
-bn.PluginCommand.register_for_address('Repack AnmManagerFields', 'Repack AnmManagerFields', repack_anm_fields)
+repack_name = 'zAnmManager'
+def _repack_plugin_callback(bv: bn.BinaryView, addr):
+    fill_large_gaps(bv, repack_name)
+
+bn.PluginCommand.register_for_address('Repack AnmManagerFields', 'Repack AnmManagerFields', _repack_plugin_callback)
 
 # ========================================================================
 

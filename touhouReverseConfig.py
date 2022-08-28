@@ -46,6 +46,6 @@ class Config:
             toml.dump(d, f)
 
 DEFAULT_CONFIG = Config(
-    bndb_dir = r"E:\Downloaded Software\Touhou Project",
-    mapfile_dir = r'F:\asd\clone\ecl-parse\map',
+    bndb_dir = Path(r"E:\Downloaded Software\Touhou Project"),
+    mapfile_dir = Path(r'F:\asd\clone\truth\map'),
 )
