@@ -1,10 +1,14 @@
 import binaryninja as bn
 from exphp_export.common import ENUM_IS_BITFIELDS_NAME, ENUM_IS_BITFIELDS_VALUE, window2
+import typing as tp
 
 from touhouReverseBnutil import recording_undo, UndoRecorder
 
 from .config import DEFAULT_FILTERS
-from .export_types import EnumBitfield, structure_to_cereal_v1, enum_to_bitfields_cereal_v1
+from .export_types import EnumBitfield, structure_to_cereal_v1, enum_to_bitfields_cereal_v1, enum_to_cereal_v1
+
+T = tp.TypeVar('T')
+C = tp.TypeVar('C')
 
 def import_funcs_from_json(bv, funcs: list, emit_status=print):
     """ Import funcs from JSON written in the V1 format. """
@@ -91,8 +95,8 @@ def _import_struct_from_json_v1(bv: bn.BinaryView, name: str, members: list, rec
             return False
 
         if emit_status:
-            get_offset = lambda item: item[0]
-            _report_changes_to_struct(name, existing_members, members, get_offset=get_offset, emit_status=emit_status)
+            get_offset = lambda item: _read_json_int(item[0])
+            _report_changes_to_cereal(name, existing_members, members, get_ordering_key=get_offset, emit_status=emit_status)
 
     bv.define_user_type(name, new_type)
     rec.enable_auto_rollback()
@@ -101,7 +105,7 @@ def _import_struct_from_json_v1(bv: bn.BinaryView, name: str, members: list, rec
 def _structure_from_cereal_v1(bv: bn.BinaryView, members: list) -> bn.StructureType:
     builder = bn.StructureBuilder.create()
     for offset, name, type_str in members:
-        offset = int(offset, 16)
+        offset = _read_json_int(offset)
 
         match [name, type_str]:
             case ["__unknown", None]:
@@ -142,8 +146,8 @@ def _import_bitfields_from_json_v1(bv: bn.BinaryView, name: str, members: list, 
             return False
 
         if emit_status:
-            get_offset = lambda item: item[0]
-            _report_changes_to_struct(name, existing_members, members, get_offset=get_offset, emit_status=emit_status)
+            get_offset = lambda item: _read_json_int(item[0])
+            _report_changes_to_cereal(name, existing_members, members, get_ordering_key=get_offset, emit_status=emit_status)
 
     bv.define_user_type(name, new_type)
     rec.enable_auto_rollback()
@@ -178,8 +182,46 @@ def _bitfields_from_cereal_v1(bv: bn.BinaryView, members: list) -> bn.Enumeratio
 
     return builder.immutable_copy()
 
+def import_enums_from_json(bv: bn.BinaryView, structs: dict, emit_status=print):
+    """ Import enums from JSON written in the V1 format. """
+    return _import_enums_from_json_v1(bv, structs, emit_status=emit_status)
 
-def _diff_two_struct_jsons_v1(a_members: list, b_members: list, get_offset):
+def _import_enums_from_json_v1(bv: bn.BinaryView, enums: dict, emit_status=None):
+    """ Import structs from JSON written in the V1 format. """
+    changed = False
+    with recording_undo(bv) as rec:
+        for name, members in enums.items():
+            changed = changed | _import_enum_from_json_v1(bv, name, members, rec=rec, emit_status=emit_status)
+        return changed
+
+def _import_enum_from_json_v1(bv: bn.BinaryView, name: str, members: list, rec: UndoRecorder, emit_status):
+    new_type = _enumeration_from_cereal_v1(bv, members)
+
+    existing_type = bv.get_type_by_name(name)
+    if existing_type is not None:
+        if not isinstance(existing_type, bn.EnumerationType):
+            raise RuntimeError(f'Type {name} already exists but is not an enum!')
+
+        existing_members = enum_to_cereal_v1(existing_type)
+        if existing_members == members:
+            return False
+
+        if emit_status:
+            get_ordering_key = lambda item: _read_json_int(item[1])
+            _report_changes_to_cereal(name, existing_members, members, get_ordering_key=get_ordering_key, emit_status=emit_status)
+
+    bv.define_user_type(name, new_type)
+    rec.enable_auto_rollback()
+    return True
+
+def _enumeration_from_cereal_v1(bv: bn.BinaryView, members: list) -> bn.StructureType:
+    builder = bn.EnumerationBuilder.create()
+    for name, value in members:
+        value = _read_json_int(value)
+        builder.append(name, value)
+    return builder.immutable_copy()
+
+def _diff_two_cereal_jsons_v1(a_members: list[C], b_members: list[C], get_ordering_key: tp.Callable[[C], int]):
     # We need peekable iteration so we can choose which one to advance.
     # That's hard to do with iterators in python so we use indices.
     a_index = 0
@@ -211,8 +253,8 @@ def _diff_two_struct_jsons_v1(a_members: list, b_members: list, get_offset):
             yield from handle_addition()
             continue
 
-        a_offset = get_offset(a_members[a_index])
-        b_offset = get_offset(b_members[b_index])
+        a_offset = get_ordering_key(a_members[a_index])
+        b_offset = get_ordering_key(b_members[b_index])
 
         # unchanged members
         if a_members[a_index] == b_members[b_index]:
@@ -226,6 +268,21 @@ def _diff_two_struct_jsons_v1(a_members: list, b_members: list, get_offset):
             yield from handle_addition()
             continue
 
-def _report_changes_to_struct(struct_name: str, a_members: list, b_members: list, get_offset, emit_status):
-    for diffchar, member in _diff_two_struct_jsons_v1(a_members, b_members, get_offset):
+def _report_changes_to_cereal(
+    struct_name: str,
+    a_members: list[C],
+    b_members: list[C],
+    get_ordering_key: tp.Callable[[C], int],
+    emit_status: tp.Callable[[str], None],
+):
+    for diffchar, member in _diff_two_cereal_jsons_v1(a_members, b_members, get_ordering_key):
         emit_status(f'struct {struct_name}: {diffchar} {member}')
+
+def _read_json_int(value: int | str) -> int:
+    if isinstance(value, str):
+        if value.startswith('0x') or value.startswith('0X'):
+            return int(value[2:], 16)
+        if value.startswith('0b') or value.startswith('0B'):
+            return int(value[2:], 2)
+        return int(value, 10)
+    return value

@@ -30,7 +30,7 @@ def lookup_named_type_definition(bv: bn.BinaryView, name: bn.QualifiedName) -> t
         # Binja wouldn't have auto-expanded a typedef referring to a struct or enum,
         # so in these cases we can be sure that 'name' refers to the struct/enum itself.
         case bn.EnumerationType():
-            if ty.members[0].name == ENUM_IS_BITFIELDS_NAME and ty.members[0].value == ENUM_IS_BITFIELDS_VALUE:
+            if ty.members and (ty.members[0].name, ty.members[0].value) == (ENUM_IS_BITFIELDS_NAME, ENUM_IS_BITFIELDS_VALUE):
                 return ('bitfields', None)
             else:
                 return ('enum', None)

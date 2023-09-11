@@ -22,7 +22,7 @@ from .export_types import _create_types_file_json, TypeToTTreeConverter, structu
 from .importing import _import_symbols_from_json_v1
 
 # re-exports
-from .importing import import_funcs_from_json, import_statics_from_json, import_structs_from_json, import_bitfields_from_json
+from .importing import import_funcs_from_json, import_statics_from_json, import_structs_from_json, import_bitfields_from_json, import_enums_from_json
 from .export_types import create_types_file_json
 from .test import run_tests
 
